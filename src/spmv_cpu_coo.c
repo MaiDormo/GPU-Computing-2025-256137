@@ -6,12 +6,9 @@
 #include <time.h>
 #include <sys/time.h>
 
-// Function to get current time in microseconds
-double get_time() {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return tv.tv_sec + tv.tv_usec * 1e-6;
-}
+#include "../include/my_time_lib.h"
+
+//(n*m)*(m*1)=(n*1)
 
 void read_from_file_and_init(char * file_path, double ** a_val, int ** a_row, int ** a_col, int * mat_rows, int * mat_cols, int * vec_size) {
     FILE * file;
@@ -135,36 +132,39 @@ int main(int argc, char ** argv) {
         vec[i] = 1.0;
     }
 
-    double * res = (double*)calloc(m, sizeof(double));
+    double * res = (double*)malloc(n*sizeof(double));
 
     // Run SpMV multiple times to get accurate timing
-    const int NUM_RUNS = 10;
+    const int NUM_RUNS = 100;
     double total_time = 0.0;
+
+    double times[NUM_RUNS];
 
     // Warmup run
     spmv(a_val, a_row, a_col, vec, res, n_val, n);
 
     // Timed runs
     for (int run = 0; run < NUM_RUNS; run++) {
-        double start_time = get_time();
+        TIMER_DEF(0);
+        TIMER_START(0);
 
         spmv(a_val, a_row, a_col, vec, res, n_val, n);
 
-        double end_time = get_time();
-        total_time += (end_time - start_time);
+        TIMER_STOP(0);
+        times[run] = TIMER_ELAPSED(0)*1e-6;
+        total_time += times[run];
     }
 
     double avg_time = total_time / NUM_RUNS;
-
     // Calculate bandwidth and computation metrics
     // For SpMV: we read a_val, a_row, a_col, vec and write to res
     size_t bytes_read = n_val * (sizeof(double) + 2 * sizeof(int)) + n * sizeof(double);
     size_t bytes_written = n * sizeof(double);
     size_t total_bytes = bytes_read + bytes_written;
 
-    double bandwidth = total_bytes / (avg_time * 1e9);  // GB/s
+    double bandwidth = total_bytes / (avg_time * 1.0e9);  // GB/s
     double flops = 2.0 * n_val;  // Each non-zero element requires a multiply and add
-    double gflops = flops / (avg_time * 1e9);  // GFLOPS
+    double gflops = flops / (avg_time * 1.0e9);  // GFLOPS
 
     printf("\nSpMV Performance:\n");
     printf("Matrix size: %d x %d with %d non-zero elements\n", n, m, n_val);
@@ -174,7 +174,7 @@ int main(int argc, char ** argv) {
 
     // First few elements of result vector
     printf("\nFirst 10 elements of result vector (or fewer if n < 10):\n");
-    for (int i = 0; i < m; i++) {
+    for (int i = 0; i < n; i++) {
         if (res[i] == 0.0)
             continue;
         printf("%f ", res[i]);
