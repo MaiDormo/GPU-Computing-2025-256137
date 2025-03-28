@@ -113,7 +113,7 @@ int coo_to_csr(int n_rows, int nnz, const int* a_row, const int* a_col, const do
 
     // Cumulative sum to get row pointers
     for (int i = 0; i < n_rows; i++) {
-        csr_row_ptr[i + 1] = csr_row_ptr[i];
+        csr_row_ptr[i + 1] += csr_row_ptr[i];
     }
 
     // Copy values and column indicies to their correct positions
@@ -164,14 +164,17 @@ void print_vector(const double * vec, const int n) {
 }
 
 // Matrix-vector product function (SpMV)
-void spmv(const double *a_val, const int *a_row, const int *a_col,
-          const double *vec, double *res, int n_val, int n) {
+void spmv(const double *csr_values, const int *csr_row_ptr,
+          const double *vec, double *res, int n) {
     // Clear result vector
     memset(res, 0, n * sizeof(double));
 
     // Perform SpMV
-    for (int i = 0; i < n_val; i++) {
-        res[a_row[i]] += a_val[i] * vec[a_col[i]];
+    #pragma omp parallel for
+    for (int i = 0; i < n; i++) {
+        for (int j = csr_row_ptr[i]; j < csr_row_ptr[i+1]; j++) {
+            res[i] += csr_values[j] * vec[i];
+        }
     }
 }
 
@@ -197,6 +200,16 @@ int main(int argc, char ** argv) {
 
     double * res = (double*)malloc(n*sizeof(double));
 
+    double * csr_values = malloc(n_val * sizeof(double));
+    int * csr_col_indices = malloc(n_val * sizeof(int));
+    int * csr_row_ptr = calloc(n + 1,sizeof(int));
+
+    coo_to_csr(n,n_val,a_row,a_col,a_val,csr_values,csr_col_indices,csr_row_ptr);
+
+    free(a_row);
+    free(a_col);
+    free(a_val);
+
     // Run SpMV multiple times to get accurate timing
     const int NUM_RUNS = 100;
     double total_time = 0.0;
@@ -204,15 +217,14 @@ int main(int argc, char ** argv) {
     double times[NUM_RUNS];
 
     // Warmup run
-    spmv(a_val, a_row, a_col, vec, res, n_val, n);
+    spmv(csr_values, csr_row_ptr, vec, res, n);
 
     // Timed runs
-    // #pragma omp parallel for
     for (int run = 0; run < NUM_RUNS; run++) {
         TIMER_DEF(0);
         TIMER_START(0);
 
-        spmv(a_val, a_row, a_col, vec, res, n_val, n);
+        spmv(csr_values, csr_row_ptr, vec, res, n);
 
         TIMER_STOP(0);
         times[run] = TIMER_ELAPSED(0)*1e-6;
@@ -234,7 +246,7 @@ int main(int argc, char ** argv) {
     double flops = 2.0 * n_val;  // Each non-zero element requires a multiply and add
     double gflops = flops / (avg_time * 1.0e9);  // GFLOPS
 
-    printf("\nSpMV Performance C00:\n");
+    printf("\nSpMV Performance CSR:\n");
     printf("Matrix size: %d x %d with %d non-zero elements\n", n, m, n_val);
     printf("Average execution time: %.6f seconds\n", avg_time);
     printf("Memory bandwidth: %.2f GB/s\n", bandwidth);
@@ -250,9 +262,10 @@ int main(int argc, char ** argv) {
     }
     printf("\n");
 
-    free(a_val);
-    free(a_col);
-    free(a_row);
+
+    free(csr_values);
+    free(csr_col_indices);
+    free(csr_row_ptr);
     free(res);
     free(vec);
     return 0;

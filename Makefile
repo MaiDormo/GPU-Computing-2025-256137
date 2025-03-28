@@ -26,7 +26,7 @@ all: $(EXECUTABLES)
 # Rule for creating executables
 $(BIN_FOLDER)/%: $(SRC_FOLDER)/%.c $(OBJECTS)
 	@mkdir -p $(BIN_FOLDER)
-	$(CC) $< $(filter-out $(OBJ_FOLDER)/$*.o, $(OBJECTS)) -o $@ $(OPT)
+	$(CC) $< $(filter-out $(OBJ_FOLDER)/$*.o, $(OBJECTS)) -o $@ $(OPT) -fopenmp
 
 # Rule for creating object files
 $(OBJ_FOLDER)/%.o: $(SRC_FOLDER)/%.c
