@@ -8,95 +8,10 @@
 #include <omp.h>
 
 #include "../include/my_time_lib.h"
+#include "../include/read_file_lib.h"
 
-//(n*m)*(m*1)=(n*1)
-
-void read_from_file_and_init(char * file_path, double ** a_val, int ** a_row, int ** a_col, int * mat_rows, int * mat_cols, int * vec_size) {
-    FILE * file;
-    const size_t BUFFER_SIZE = 16 * 1024 * 1024; // 16MB
-
-    // Open file for reading
-    file = fopen(file_path, "r");
-    // Check if file opened successfully
-    if (!file) {
-        perror("Error opening file!\n");
-        exit(1);
-    }
-
-    // Set up a buffer for file I/O (16MB buffer)
-    char * buffer = (char*)malloc(BUFFER_SIZE);
-    if (!buffer) {
-        perror("Failed to allocate file buffer");
-        fclose(file);
-        exit(1);
-    }
-    setvbuf(file, buffer, _IOFBF, BUFFER_SIZE);
-
-    char line_buffer[1024];
-    // Ignore lines that start with '%'
-    while (fgets(line_buffer, sizeof(line_buffer), file)) {
-        if (line_buffer[0] != '%') {
-            break;  // Found a non-comment line
-        }
-    }
-
-    // Read header
-    int n, m, n_val;
-    // We also take m, even though we do not use it, cause its a squared matrix
-    //
-    if (sscanf(line_buffer, "%d %d %d", &n, &m, &n_val) != 3) {
-        perror("Error reading graph metadata");
-        free(buffer);
-        fclose(file);
-        exit(-1);
-    }
-    *mat_rows = n;
-    *mat_cols = m;
-    *vec_size = n_val;
-
-    double * val = (double*)malloc(n_val*sizeof(double));
-    int * row = (int*)malloc(n_val*sizeof(int));
-    int * col = (int*)malloc(n_val*sizeof(int));
-
-    // Check if allocations succeeded
-    if (!val || !row || !col) {
-        perror("Failed to allocate memory for matrix data");
-        free(buffer);
-        free(val);   // These are safe even if NULL
-        free(row);
-        free(col);
-        fclose(file);
-        exit(1);
-    }
-
-    int r, c;
-    double v;
-    for (int i = 0; i < n_val; i++) {
-        if (fscanf(file, "%d %d %lf", &r, &c, &v) != 3){
-            fprintf(stderr, "Error reading entry %d\n", i);
-            free(buffer);
-            free(row);
-            free(col);
-            free(val);
-            fclose(file);
-            exit(1);
-        }
-
-        row[i] = r-1;
-        col[i] = c-1;
-        val[i] = v;
-    }
-
-    // Passing pointers
-    *a_row = row;
-    *a_col = col;
-    *a_val = val;
-
-    free(buffer);
-    fclose(file);
-}
-
-int coo_to_csr(int n_rows, int nnz, const int* a_row, const int* a_col, const double* a_val,
+int coo_to_csr(int n_rows, int nnz, 
+    const int* a_row, const int* a_col, const double* a_val,
     double* csr_values, int* csr_col_indices, int* csr_row_ptr) {
 
     //error handling
@@ -156,15 +71,8 @@ int coo_to_csr(int n_rows, int nnz, const int* a_row, const int* a_col, const do
     return 0;
 }
 
-void print_vector(const double * vec, const int n) {
-    for (int i = 0; i < n; i++) {
-        printf("%f ", vec[i]);
-    }
-    printf("\n");
-}
-
 // Matrix-vector product function (SpMV)
-void spmv(const double *csr_values, const int *csr_row_ptr,
+void spmv(const double *csr_values, const int *csr_row_ptr, const int *csr_col_indices,
           const double *vec, double *res, int n) {
     // Clear result vector
     memset(res, 0, n * sizeof(double));
@@ -172,9 +80,15 @@ void spmv(const double *csr_values, const int *csr_row_ptr,
     // Perform SpMV
     #pragma omp parallel for
     for (int i = 0; i < n; i++) {
-        for (int j = csr_row_ptr[i]; j < csr_row_ptr[i+1]; j++) {
-            res[i] += csr_values[j] * vec[i];
+        double sum = 0.0;
+        const int start = csr_row_ptr[i];
+        const int end = csr_row_ptr[i+1];
+
+        #pragma omp simd reduction(+:sum)
+        for (int j = start; j < end; j++) {
+            sum += csr_values[j] * vec[csr_col_indices[j]];
         }
+        res[i] = sum;
     }
 }
 
@@ -192,17 +106,17 @@ int main(int argc, char ** argv) {
     read_from_file_and_init(argv[1], &a_val, &a_row, &a_col, &n, &m, &n_val);
 
 
-    double * vec = (double*)malloc(m*sizeof(double));
-    #pragma omp for simd
-    for (int i = 0; i < n; i++) {
+    double * vec = aligned_alloc(64, m * sizeof(double));
+    #pragma omp parallel for simd
+    for (int i = 0; i < m; i++) {
         vec[i] = 1.0;
     }
 
     double * res = (double*)malloc(n*sizeof(double));
 
-    double * csr_values = malloc(n_val * sizeof(double));
-    int * csr_col_indices = malloc(n_val * sizeof(int));
-    int * csr_row_ptr = calloc(n + 1,sizeof(int));
+    double * csr_values = aligned_alloc(64, n_val * sizeof(double));
+    int * csr_col_indices = aligned_alloc(64, n_val * sizeof(int));
+    int * csr_row_ptr = (int*)calloc(n + 1,sizeof(int));
 
     coo_to_csr(n,n_val,a_row,a_col,a_val,csr_values,csr_col_indices,csr_row_ptr);
 
@@ -217,14 +131,14 @@ int main(int argc, char ** argv) {
     double times[NUM_RUNS];
 
     // Warmup run
-    spmv(csr_values, csr_row_ptr, vec, res, n);
+    spmv(csr_values, csr_row_ptr, csr_col_indices, vec, res, n);
 
     // Timed runs
     for (int run = 0; run < NUM_RUNS; run++) {
         TIMER_DEF(0);
         TIMER_START(0);
 
-        spmv(csr_values, csr_row_ptr, vec, res, n);
+        spmv(csr_values, csr_row_ptr, csr_col_indices, vec, res, n);
 
         TIMER_STOP(0);
         times[run] = TIMER_ELAPSED(0)*1e-6;
@@ -253,7 +167,7 @@ int main(int argc, char ** argv) {
     printf("Computational performance: %.2f GFLOPS\n", gflops);
 
     // First few elements of result vector
-    printf("\nFirst 10 elements of result vector (or fewer if n < 10):\n");
+    printf("\nFirst non zero element of result vector (or fewer if n < 10):\n");
     for (int i = 0; i < n; i++) {
         if (res[i] == 0.0)
             continue;
