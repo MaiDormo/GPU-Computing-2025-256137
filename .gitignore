@@ -10,3 +10,5 @@ data/*
 bin/*
 
 .vscode/*
+
+*.exec
