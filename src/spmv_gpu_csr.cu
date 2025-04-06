@@ -32,7 +32,7 @@ int coo_to_csr(int n_rows, int nnz,
     }
 
     // Copy values and column indicies to their correct positions
-    int * temp_row_counts = calloc(n_rows,sizeof(int));
+    int * temp_row_counts = (int *)calloc(n_rows,sizeof(int));
     if (!temp_row_counts) return -1;
 
     for (int i = 0; i < nnz; i++) {
@@ -72,24 +72,31 @@ int coo_to_csr(int n_rows, int nnz,
 }
 
 // Matrix-vector product function (SpMV)
-void spmv(const double *csr_values, const int *csr_row_ptr, const int *csr_col_indices,
-          const double *vec, double *res, int n) {
-    // Clear result vector
-    memset(res, 0, n * sizeof(double));
+// void spmv(const double *csr_values, const int *csr_row_ptr, const int *csr_col_indices,
+//           const double *vec, double *res, int n) {
+//     // Clear result vector
+//     memset(res, 0, n * sizeof(double));
 
-    // Perform SpMV
-    #pragma omp parallel for
-    for (int i = 0; i < n; i++) {
-        double sum = 0.0;
-        const int start = csr_row_ptr[i];
-        const int end = csr_row_ptr[i+1];
+//     // Perform SpMV
+//     #pragma omp parallel for
+//     for (int i = 0; i < n; i++) {
+//         double sum = 0.0;
+//         const int start = csr_row_ptr[i];
+//         const int end = csr_row_ptr[i+1];
 
-        #pragma omp simd reduction(+:sum)
-        for (int j = start; j < end; j++) {
-            sum += csr_values[j] * vec[csr_col_indices[j]];
-        }
-        res[i] = sum;
-    } 
+//         #pragma omp simd reduction(+:sum)
+//         for (int j = start; j < end; j++) {
+//             sum += csr_values[j] * vec[csr_col_indices[j]];
+//         }
+//         res[i] = sum;
+//     }
+// }
+
+
+__global__ void spmv(const double *csr_values, const int *csr_row_ptr, const int *csr_col_indicies, 
+    const double *vec, double *res, int n) {
+        
+
 }
 
 int main(int argc, char ** argv) {
@@ -106,7 +113,7 @@ int main(int argc, char ** argv) {
     read_from_file_and_init(argv[1], &a_val, &a_row, &a_col, &n, &m, &n_val);
 
 
-    double * vec = aligned_alloc(64, m * sizeof(double));
+    double * vec = (double *)aligned_alloc(64, m * sizeof(double));
     #pragma omp parallel for simd
     for (int i = 0; i < m; i++) {
         vec[i] = 1.0;
@@ -114,9 +121,9 @@ int main(int argc, char ** argv) {
 
     double * res = (double*)malloc(n*sizeof(double));
 
-    double * csr_values = aligned_alloc(64, n_val * sizeof(double));
-    int * csr_col_indices = aligned_alloc(64, n_val * sizeof(int));
-    int * csr_row_ptr = (int*)calloc(n + 1,sizeof(int));
+    double * csr_values = (double *)aligned_alloc(64, n_val * sizeof(double));
+    int * csr_col_indices = (int *)aligned_alloc(64, n_val * sizeof(int));
+    int * csr_row_ptr = (int *)calloc(n + 1,sizeof(int));
 
     coo_to_csr(n,n_val,a_row,a_col,a_val,csr_values,csr_col_indices,csr_row_ptr);
 
@@ -151,11 +158,9 @@ int main(int argc, char ** argv) {
 
     double avg_time = total_time / NUM_RUNS;
     // Calculate bandwidth and computation metrics
-    size_t bytes_read = n_val * (sizeof(double) + sizeof(int)) +    // values and col indices
-                        (n + 1) * sizeof(int) +                     // row pointers
-                        n_val * sizeof(double);                     // vector reads (worst case)
-    
-    size_t bytes_written = n * sizeof(double);                      // result vector
+    // For SpMV: we read a_val, a_row, a_col, vec and write to res
+    size_t bytes_read = n_val * (sizeof(double) + 2 * sizeof(int)) + n * sizeof(double);
+    size_t bytes_written = n * sizeof(double);
     size_t total_bytes = bytes_read + bytes_written;
 
     double bandwidth = total_bytes / (avg_time * 1.0e9);  // GB/s

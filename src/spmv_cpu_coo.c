@@ -12,67 +12,6 @@
 
 //(n*m)*(m*1)=(n*1)
 
-
-int coo_to_csr(int n_rows, int nnz, const int* a_row, const int* a_col, const double* a_val,
-    double* csr_values, int* csr_col_indices, int* csr_row_ptr) {
-
-    //error handling
-    if (n_rows <= 0 || nnz < 0) return -1;
-    if (nnz > 0 && (!a_row || !a_col || !a_val)) return -1;
-    if (!csr_values || !csr_col_indices || !csr_row_ptr) return -1;
-
-    // Count number of elements in each row
-    // (we assume csr_row_pointer to be already initialized with zeros)
-    for (int i = 0; i < nnz; i++) {
-        if(a_row[i] >= n_rows || a_row[i] < 0) return -1;
-        csr_row_ptr[a_row[i] + 1]++;
-    }
-
-    // Cumulative sum to get row pointers
-    for (int i = 0; i < n_rows; i++) {
-        csr_row_ptr[i + 1] = csr_row_ptr[i];
-    }
-
-    // Copy values and column indicies to their correct positions
-    int * temp_row_counts = calloc(n_rows,sizeof(int));
-    if (!temp_row_counts) return -1;
-
-    for (int i = 0; i < nnz; i++) {
-        int row = a_row[i];
-        int dest_indx = csr_row_ptr[row] + temp_row_counts[row];
-
-        csr_values[dest_indx] = a_val[i];
-        csr_col_indices[dest_indx] = a_col[i];
-        temp_row_counts[row]++;
-    }
-
-    free(temp_row_counts);
-
-    // Sort column indices and values within each row (if needed)
-    // This step uses insertion sort for each row - good for small row lengths
-    for (int i = 0; i < n_rows; i++) {
-        int row_start = csr_row_ptr[i];
-        int row_end = csr_row_ptr[i + 1];
-
-        for (int j = row_start + 1; j < row_end; j++) {
-            int col = csr_col_indices[j];
-            double val = csr_values[j];
-            int k = j - 1;
-
-            while (k >= row_start && csr_col_indices[k] > col) {
-                csr_col_indices[k + 1] = csr_col_indices[k];
-                csr_values[k + 1] = csr_values[k];
-                k--;
-            }
-
-            csr_col_indices[k + 1] = col;
-            csr_values[k + 1] = val;
-        }
-    }
-
-    return 0;
-}
-
 // Matrix-vector product function (SpMV)
 void spmv(const double *a_val, const int *a_row, const int *a_col,
           const double *vec, double *res, int n_val, int n) {
