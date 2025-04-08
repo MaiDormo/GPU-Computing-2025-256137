@@ -1,14 +1,20 @@
 #include<iostream>
 #include <math.h>
+#include <time.h>
     // Kernel function to add the elements of two arrays
-    __global__ void add(int n, float *x, float *y)
-{
+__global__ void add(int n, float *x, float *y) {
     for (int i = 0; i < n; i++)
         y[i] = x[i] + y[i];
 }
-int main(void)
-{
-    int N = 1 << 20;
+int main(int argc, char ** argv) {
+
+    if (argc != 2) {
+        printf("Usage: ./<sum.exec> <N>");
+        exit(-1);
+    }
+
+    srand(time(NULL));
+    int N = atoi(argv[1]);
     float *x, *y;
     // Allocate Unified Memory accessible from CPU or GPU
     cudaMallocManaged(&x, N * sizeof(float));
@@ -16,8 +22,8 @@ int main(void)
     // initialize x and y arrays on the host
     for (int i = 0; i < N; i++)
     {
-        x[i] = 1.0f;
-        y[i] = 2.0f;
+        x[i] = (rand()%100+1)*0.31;
+        y[i] = (rand()%100+1)*0.73;
     }
     // Run kernel on 1M elements on the GPU
     add<<<1, 1>>>(N, x, y);
