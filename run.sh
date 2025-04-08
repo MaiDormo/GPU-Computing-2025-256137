@@ -9,4 +9,4 @@
 #SBATCH --output=test-%j.out
 #SBATCH --error=test-%j.err
 module load cuda
-srun ~/src/spmv_gpu_csr.cu
+srun ~/GPU-Computing-2025-256137/bin/spmv_gpu_csr.exec data/662_bus/662_bus.mtx

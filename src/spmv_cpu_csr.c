@@ -75,7 +75,7 @@ int coo_to_csr(int n_rows, int nnz,
 void spmv(const double *csr_values, const int *csr_row_ptr, const int *csr_col_indices,
           const double *vec, double *res, int n) {
     // Clear result vector
-    memset(res, 0, n * sizeof(double));
+    // memset(res, 0, n * sizeof(double));
 
     // Perform SpMV
     #pragma omp parallel for
