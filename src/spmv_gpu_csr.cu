@@ -41,8 +41,6 @@ void read_from_file_and_init(char * file_path, double ** a_val, int ** a_row, in
 
     // Read header
     int n, m, n_val;
-    // We also take m, even though we do not use it, cause its a squared matrix
-    //
     if (sscanf(line_buffer, "%d %d %d", &n, &m, &n_val) != 3) {
         perror("Error reading graph metadata");
         free(buffer);
@@ -189,27 +187,45 @@ int main(int argc, char ** argv) {
     const int thread_per_block = 256;
     const int block_num = (n + thread_per_block - 1) / thread_per_block;
     
-    double * vec;
-    cudaMallocManaged(&vec, m * sizeof(double));
+    // Host memory allocations
+    double *h_vec = (double*)malloc(m * sizeof(double));
+    double *h_res = (double*)malloc(n * sizeof(double));
+    double *h_csr_values = (double*)malloc(n_val * sizeof(double));
+    int *h_csr_col_indices = (int*)malloc(n_val * sizeof(int));
+    int *h_csr_row_ptr = (int*)calloc(n+1, sizeof(int)); // Initialize to zero
 
-    // #pragma omp parallel for simd
+    // Initialize vector with ones
     for (int i = 0; i < m; i++) {
-        vec[i] = 1.0;
+        h_vec[i] = 1.0;
     }
 
-    double *res, *csr_values;
-    int *csr_col_indices, *csr_row_ptr;
+    // Initialize result array with zeros
+    memset(h_res, 0, n * sizeof(double));
 
-    cudaMallocManaged(&res, n * sizeof(double));
-    cudaMallocManaged(&csr_values, n_val * sizeof(double));
-    cudaMallocManaged(&csr_col_indices, n_val * sizeof(int));
-    cudaMallocManaged(&csr_row_ptr, (n+1) * sizeof(int));
+    // Convert COO to CSR format in host memory
+    coo_to_csr(n, n_val, a_row, a_col, a_val, h_csr_values, h_csr_col_indices, h_csr_row_ptr);
 
-    coo_to_csr(n,n_val,a_row,a_col,a_val,csr_values,csr_col_indices,csr_row_ptr);
-
+    // Free original COO data as we don't need it anymore
     free(a_row);
     free(a_col);
     free(a_val);
+
+    // Device memory allocations
+    double *d_vec, *d_res, *d_csr_values;
+    int *d_csr_col_indices, *d_csr_row_ptr;
+    
+    cudaMalloc(&d_vec, m * sizeof(double));
+    cudaMalloc(&d_res, n * sizeof(double));
+    cudaMalloc(&d_csr_values, n_val * sizeof(double));
+    cudaMalloc(&d_csr_col_indices, n_val * sizeof(int));
+    cudaMalloc(&d_csr_row_ptr, (n+1) * sizeof(int));
+
+    // Copy data to device
+    cudaMemcpy(d_vec, h_vec, m * sizeof(double), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_res, h_res, n * sizeof(double), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_csr_values, h_csr_values, n_val * sizeof(double), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_csr_col_indices, h_csr_col_indices, n_val * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_csr_row_ptr, h_csr_row_ptr, (n+1) * sizeof(int), cudaMemcpyHostToDevice);
 
     // Run SpMV multiple times to get accurate timing
     const int NUM_RUNS = 100;
@@ -218,30 +234,34 @@ int main(int argc, char ** argv) {
     double times[NUM_RUNS];
 
     // Warmup run
-    spmv<<<block_num,thread_per_block>>>(csr_values, csr_row_ptr, csr_col_indices, vec, res, n);
+    spmv<<<block_num, thread_per_block>>>(d_csr_values, d_csr_row_ptr, d_csr_col_indices, d_vec, d_res, n);
     cudaDeviceSynchronize();
 
     cudaEvent_t start, end;
     cudaEventCreate(&start);
     cudaEventCreate(&end);
-
     
     // Timed runs
     for (int run = 0; run < NUM_RUNS; run++) {   
         //start the event
         cudaEventRecord(start);
 
-        spmv<<<block_num,thread_per_block>>>(csr_values, csr_row_ptr, csr_col_indices, vec, res, n);
+        spmv<<<block_num, thread_per_block>>>(d_csr_values, d_csr_row_ptr, d_csr_col_indices, d_vec, d_res, n);
+        
         //close event
         cudaEventRecord(end);
         
         //wait to synch
         cudaEventSynchronize(end);
+        
         //extract time
         float millisec = 0.0;
         cudaEventElapsedTime(&millisec, start, end);
         times[run] = millisec * 1e-3;
     }
+
+    // Copy result back after all runs
+    cudaMemcpy(h_res, d_res, n * sizeof(double), cudaMemcpyDeviceToHost);
 
     cudaEventDestroy(start);
     cudaEventDestroy(end);
@@ -274,18 +294,26 @@ int main(int argc, char ** argv) {
     // First few elements of result vector
     printf("\nFirst non zero element of result vector (or fewer if n < 10):\n");
     for (int i = 0; i < n; i++) {
-        if (res[i] == 0.0)
+        if (h_res[i] == 0.0)
             continue;
-        printf("%f ", res[i]);
+        printf("%f ", h_res[i]);
         break;
     }
     printf("\n");
 
+    // Free device memory
+    cudaFree(d_vec);
+    cudaFree(d_res);
+    cudaFree(d_csr_values);
+    cudaFree(d_csr_col_indices);
+    cudaFree(d_csr_row_ptr);
 
-    cudaFree(csr_values);
-    cudaFree(csr_col_indices);
-    cudaFree(csr_row_ptr);
-    cudaFree(res);
-    cudaFree(vec);
+    // Free host memory
+    free(h_vec);
+    free(h_res);
+    free(h_csr_values);
+    free(h_csr_col_indices);
+    free(h_csr_row_ptr);
+    
     return 0;
 }
