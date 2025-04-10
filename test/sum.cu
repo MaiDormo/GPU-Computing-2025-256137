@@ -1,11 +1,16 @@
 #include<iostream>
 #include <math.h>
 #include <time.h>
-    // Kernel function to add the elements of two arrays
+
+
+// Kernel function to add the elements of two arrays
 __global__ void add(int n, float *x, float *y) {
-    for (int i = 0; i < n; i++)
-        y[i] = x[i] + y[i];
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index < n) {
+        y[index] = x[index] + y[index];
+    }
 }
+
 int main(int argc, char ** argv) {
 
     if (argc != 2) {
@@ -25,15 +30,31 @@ int main(int argc, char ** argv) {
         x[i] = (rand()%100+1)*0.31;
         y[i] = (rand()%100+1)*0.73;
     }
+
+    for (int i = 0; i < N; i++) {
+        printf("%f ", x[i]);
+    }
+    printf("\n");
+
+    for (int i = 0; i < N; i++) {
+        printf("%f ", y[i]);
+    }
+    printf("\n");
+
+    const int threads_per_block = 256;
+    const int number_of_blocks = (N + threads_per_block - 1) / threads_per_block;
+
     // Run kernel on 1M elements on the GPU
-    add<<<1, 1>>>(N, x, y);
+    add<<<number_of_blocks, threads_per_block>>>(N, x, y);
     // Wait for GPU to finish before accessing on host
     cudaDeviceSynchronize();
-    // Check for errors (all values should be 3.0f)
-    float maxError = 0.0f;
-    for (int i = 0; i < N; i++)
-        maxError = fmax(maxError, fabs(y[i] - 3.0f));
-    std::cout << "Max error: " << maxError << std::endl;
+    
+    for (int i = 0; i < N; i++) {
+        printf("%f ", y[i]);
+    }
+    printf("\n");
+
+
     // Free memory
     cudaFree(x);
     cudaFree(y);
