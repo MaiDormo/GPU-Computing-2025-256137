@@ -21,3 +21,6 @@ bin/*
 # Result of cluster
 *.out
 *.err
+
+# Plotting folder
+test/plots/*
