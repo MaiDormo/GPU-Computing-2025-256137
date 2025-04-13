@@ -1,45 +1,70 @@
-# CUDA Device Query (Runtime API) version (CUDART static linking)
+# NVIDIA A30 GPU Specifications
 
-Detected 1 CUDA Capable device(s)
+## Basic Information
+| Specification | Value |
+|---------------|-------|
+| Device | NVIDIA A30 |
+| CUDA Driver / Runtime Version | 12.5 / 12.1 |
+| CUDA Capability Major/Minor | 8.0 |
+| Total Global Memory | 24169 MB (25,343,295,488 bytes) |
 
-## Device 0: "NVIDIA A30"
+## Core Architecture
+| Specification | Value |
+|---------------|-------|
+| Multiprocessors | 56 |
+| CUDA Cores per MP | 64 |
+| Total CUDA Cores | 3584 |
+| GPU Max Clock Rate | 1440 MHz (1.44 GHz) |
 
-  CUDA Driver Version / Runtime Version          12.5 / 12.1
-  CUDA Capability Major/Minor version number:    8.0
-  Total amount of global memory:                 24169 MBytes (25343295488 bytes)
-  (056) Multiprocessors, (064) CUDA Cores/MP:    *3584 CUDA Cores*
-  GPU Max Clock rate:                            1440 MHz (1.44 GHz)
-  Memory Clock rate:                             1215 Mhz
-  Memory Bus Width:                              *3072-bit*
-  L2 Cache Size:                                 *25165824 bytes*
-  Maximum Texture Dimension Size (x,y,z)         1D=(131072), 2D=(131072, 65536), 3D=(16384, 16384, 16384)
-  Maximum Layered 1D Texture Size, (num) layers  1D=(32768), 2048 layers
-  Maximum Layered 2D Texture Size, (num) layers  2D=(32768, 32768), 2048 layers
-  Total amount of constant memory:               *65536 bytes*
-  Total amount of shared memory per block:       *49152 bytes*
-  Total shared memory per multiprocessor:        *167936 bytes*
-  Total number of registers available per block: *65536*
-  Warp size:                                     *32*
-  Maximum number of threads per multiprocessor:  *2048*
-  Maximum number of threads per block:           *1024*
-  Max dimension size of a thread block (x,y,z): (1024, 1024, 64)
-  Max dimension size of a grid size    (x,y,z): (2147483647, 65535, 65535)
-  Maximum memory pitch:                          2147483647 bytes
-  Texture alignment:                             512 bytes
-  Concurrent copy and kernel execution:          Yes with 3 copy engine(s)
-  Run time limit on kernels:                     No
-  Integrated GPU sharing Host Memory:            No
-  Support host page-locked memory mapping:       Yes
-  Alignment requirement for Surfaces:            Yes
-  Device has ECC support:                        Enabled
-  Device supports Unified Addressing (UVA):      Yes
-  Device supports Managed Memory:                Yes
-  Device supports Compute Preemption:            Yes
-  Supports Cooperative Kernel Launch:            Yes
-  Supports MultiDevice Co-op Kernel Launch:      Yes
-  Device PCI Domain ID / Bus ID / location ID:   0 / 23 / 0
-  Compute Mode:
-     < Default (multiple host threads can use ::cudaSetDevice() with device simultaneously) >
+## Memory Specifications
+| Specification | Value |
+|---------------|-------|
+| Memory Clock Rate | 1215 MHz |
+| Memory Bus Width | 3072-bit |
+| L2 Cache Size | 25,165,824 bytes (~24 MB) |
+| Constant Memory | 65,536 bytes (64 KB) |
+| Shared Memory per Block | 49,152 bytes (48 KB) |
+| Shared Memory per MP | 167,936 bytes (~164 KB) |
 
-deviceQuery, CUDA Driver = CUDART, CUDA Driver Version = 12.5, CUDA Runtime Version = 12.1, NumDevs = 1
-Result = PASS
+## Thread & Block Limits
+| Specification | Value |
+|---------------|-------|
+| Warp Size | 32 |
+| Max Threads per MP | 2048 |
+| Max Threads per Block | 1024 |
+| Max Thread Block Dimensions | (1024, 1024, 64) |
+| Max Grid Dimensions | (2147483647, 65535, 65535) |
+
+## Texture & Memory Features
+| Specification | Value |
+|---------------|-------|
+| Max Texture Dimensions 1D | 131072 |
+| Max Texture Dimensions 2D | (131072, 65536) |
+| Max Texture Dimensions 3D | (16384, 16384, 16384) |
+| Max Layered 1D Texture | 1D=(32768), 2048 layers |
+| Max Layered 2D Texture | 2D=(32768, 32768), 2048 layers |
+| Maximum Memory Pitch | 2147483647 bytes |
+| Texture Alignment | 512 bytes |
+| Registers Available per Block | 65536 |
+
+## Advanced Features
+| Feature | Support |
+|---------|---------|
+| Concurrent Copy & Kernel Execution | Yes (3 copy engines) |
+| Kernel Runtime Limit | No |
+| Host Memory Sharing | No |
+| Host Page-locked Memory Mapping | Yes |
+| Surface Alignment Requirement | Yes |
+| ECC Support | Enabled |
+| Unified Addressing (UVA) | Yes |
+| Managed Memory | Yes |
+| Compute Preemption | Yes |
+| Cooperative Kernel Launch | Yes |
+| MultiDevice Co-op Kernel Launch | Yes |
+
+## Metrics Asked For Lab
+| Metric | Value |
+|--------|-------|
+| Operations per Second | 2430 MHz (Memory clock rate × 2 due to DDR) |
+| Total Number of Byte Exchanged | 384 Byte (Memory bus width / 8 (bit in a Byte)) |
+| Streaming Multiprocessor | 56 (as Referenced Before) |
