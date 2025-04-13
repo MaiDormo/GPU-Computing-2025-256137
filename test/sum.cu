@@ -1,69 +1,195 @@
-#include<iostream>
+#include <iostream>
+#include <iomanip>
 #include <math.h>
 #include <time.h>
 
-#define dtype float
+#define dtype double
 
+/*
+## Metrics Asked For Lab
+| Metric | Value |
+|--------|-------|
+| Operations per Second | 2430 MHz (Memory clock rate × 2 due to DDR) |
+| Total Number of Byte Exchanged | 384 Byte (Memory bus width / 8 (bit in a Byte)) |
+| Streaming Multiprocessor | 56 (as Referenced Before) |
+*/
 
-// Kernel function to add the elements of two arrays
-__global__ void add(int n, float *x, float *y) {
-    int index = blockIdx.x * blockDim.x + threadIdx.x;
-    if (index < n) {
-        y[index] = x[index] + y[index];
-    }
-}
-
-__global__ void add_elem_wise(int n, dtype *x, dtype* y) {
-
-    int idx = threadIdx.x + blockDim.x * blockIdx.x;
-
-    for (int j = idx; j < n; j += gridDim.x*blockDim.x) {
+__global__ void add_linear_access(const int n, dtype *x, dtype* y) {
+    const int idx = threadIdx.x + blockDim.x * blockIdx.x;
+    const int stride = gridDim.x * blockDim.x;
+    for (int j = idx; j < n; j += stride) {
         y[j] = x[j] + y[j];
     }
 }
 
-int main(int argc, char ** argv) {
+__global__ void add_consecutive_access(const int n, dtype *x, dtype *y) {
+    // because we have only one block we can compute directly the starting position
+    // and final position for each thread
+    const int len = n / blockDim.x;
+    const int start = threadIdx.x * len;
+    for (int i = start; i < start + len; i++) {
+        y[i] = x[i] + y[i];
+    } 
+}
 
-    srand(time(NULL));
-    int N = 4096;
-    dtype *x, *y;
+
+void bench(int len, cudaEvent_t start, const int grid_sizes[], const int block_sizes[], int N, dtype *x, dtype *y, cudaEvent_t end, float times[]) {
+    float millis = 0.0;
+    for (int i = 0; i < len; i++) {
+        for (int j = 0; j < len; j++) {
+            cudaEventRecord(start);
+            add_linear_access<<<grid_sizes[j], block_sizes[i]>>>(N, x, y);
+            cudaEventRecord(end);
+            cudaEventSynchronize(end);
+            cudaEventElapsedTime(&millis, start, end);
+            times[j + i * len] = millis;
+        }
+    }
+}
+
+
+void linear_access_bench(cudaEvent_t start, cudaEvent_t end, const int grid_sizes[], 
+    const int block_sizes[], float times[], int len, dtype* x, dtype* y, int N) {
+    
+    bench(len, start, grid_sizes, block_sizes, N, x, y, end, times);
+}
+
+void consecutive_access_bench(cudaEvent_t start, cudaEvent_t end, const int grid_sizes[], 
+    const int block_sizes[], float times[], int len, dtype* x, dtype* y, int N) {
+    
+    bench(len, start, grid_sizes, block_sizes, N, x, y, end, times);
+}
+
+void print_stat(const int grid_sizes[], const int block_sizes[], const float times[], const int len, const int N,
+    const double values[], const char * unit) {
+    // Header row with grid sizes
+    std::cout << std::left << std::setw(12) << "Block/Grid";
+    for (int j = 0; j < len; j++) {
+        std::cout << "| " << std::left << std::setw(10) << grid_sizes[j] << " ";
+    }
+    std::cout << std::endl;
+    
+    // Print separator
+    std::cout << std::string(12, '-');
+    for (int j = 0; j < len; j++) {
+        std::cout << "+" << std::string(12, '-');
+    }
+    std::cout << std::endl;
+
+    // Print results for each block size
+    for (int i = 0; i < len; i++) {
+        std::cout << std::left << std::setw(12) << block_sizes[i];
+        for (int j = 0; j < len; j++) {
+            if (values == NULL) {
+                std::cout << "| " << std::fixed << std::setprecision(2)
+                     << std::setw(8) << times[i*len+j] << unit << " ";
+            } else {
+                std::cout << "| " << std::fixed << std::setprecision(2)
+                         << std::setw(6) << values[i*len+j] << unit << " ";
+            }
+        }
+        std::cout << std::endl;
+    }
+    std::cout << std::endl;
+}
+
+
+void compute_result(const int grid_sizes[], const int block_sizes[], 
+    const float times[], int len, int N, const char* test_name) {
+    
+    size_t bytes_read = N * sizeof(dtype) * 2;
+    size_t bytes_written = N * sizeof(dtype);
+    size_t total_bytes = bytes_read + bytes_written;
+
+    std::cout << "\n===== " << test_name << " Results =====\n";
+
+    double values[len*len];
+
+    print_stat(grid_sizes,block_sizes,times,len,N,NULL, "ms");
+
+    //compute the bandwidth (GB/s)
+    for (int i = 0; i < len; i++) {
+        for (int j = 0; j < len; j++) {
+            values[i*len+j] = total_bytes /  (times[i*len+j] * 1.0e6); // GB/s
+        }
+    }
+
+    print_stat(grid_sizes,block_sizes,times,len,N,values, "GB/s");
+
+    //compute the GFLOPS
+    for (int i = 0; i < len; i++) {
+        for (int j = 0; j < len; j++) {
+            values[i*len+j] = N / (times[i*len+j] * 1.0e6);
+        }
+    }
+
+    print_stat(grid_sizes,block_sizes,times,len,N,values, "GFLOPS");
+    
+}
+
+
+void linear_compute_result(const int grid_sizes[], const int block_sizes[], 
+    const float linear_times[], int len, int N) {
+    compute_result(grid_sizes, block_sizes, linear_times, len, N, "Linear");
+}
+
+void consecutive_compute_result(const int grid_sizes[], const int block_sizes[], 
+    const float consecutive_times[], int len, int N) {
+    compute_result(grid_sizes, block_sizes, consecutive_times, len, N, "Consecutive");
+}
+
+
+
+int main(int argc, char **argv) {
+
+    const int N = 4096 * 4096 * 16;
+    
+    // For benchmarking
+    const int len = 6;
+    const int grid_sizes[] = {1,3,7,14,28,56};
+    const int block_sizes[] = {32,64,128,256,512,1024};
+    float linear_times[len*len];
+    float consecutive_times[len*len];
+    
     // Allocate Unified Memory accessible from CPU or GPU
+    dtype *x, *y;
     cudaMallocManaged(&x, N * sizeof(dtype));
     cudaMallocManaged(&y, N * sizeof(dtype));
     // initialize x and y arrays on the host
-    for (int i = 0; i < N; i++)
-    {
+    for (int i = 0; i < N; i++) {
         x[i] = i;
         y[i] = i;
     }
 
-    for (int i = 0; i < 20; i++) {
-        printf("%f ", x[i]);
+    cudaEvent_t start, end;
+    cudaEventCreate(&start);
+    cudaEventCreate(&end);
+
+    //---------------BENCHMARKING-------------------
+
+    linear_access_bench(start,end,grid_sizes,block_sizes,linear_times,len,x,y,N);
+
+    //reset values
+    for (int i = 0; i < N; i++) {
+        x[i] = i;
+        y[i] = i;
     }
-    printf("\n");
 
-    for (int i = 0; i < 20; i++) {
-        printf("%f ", y[i]);
-    }
-    printf("\n");
-
-    const int threads_per_block = 256;
-    const int number_of_blocks = (N + threads_per_block - 1) / (threads_per_block * 2);
-
-    // Run kernel on 1M elements on the GPU
-    // add<<<number_of_blocks, threads_per_block>>>(N, x, y);
-
-    add_elem_wise<<<number_of_blocks,threads_per_block>>>(N,x,y);
-    // Wait for GPU to finish before accessing on host
-    cudaDeviceSynchronize();
+    consecutive_access_bench(start,end,grid_sizes,block_sizes,consecutive_times,len,x,y,N);
     
-    for (int i = 0; i < 20; i++) {
-        printf("%f ", y[i]);
-    }
+    //---------------COMPUTE RESULTS------------------
+
+    linear_compute_result(grid_sizes,block_sizes,linear_times,len,N);
+    printf("\n");
+    consecutive_compute_result(grid_sizes,block_sizes,consecutive_times,len,N);
     printf("\n");
 
+    //------------------------------------------------
 
+    
     // Free memory
+    cudaEventDestroy(start);
+    cudaEventDestroy(end);
     cudaFree(x);
     cudaFree(y);
 }
