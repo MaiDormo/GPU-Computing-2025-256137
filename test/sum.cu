@@ -34,6 +34,13 @@ __global__ void add_consecutive_access(const int n, dtype *x, dtype *y) {
 
 
 void bench(int len, cudaEvent_t start, const int grid_sizes[], const int block_sizes[], int N, dtype *x, dtype *y, cudaEvent_t end, float times[]) {
+    
+}
+
+
+void linear_access_bench(cudaEvent_t start, cudaEvent_t end, const int grid_sizes[], 
+    const int block_sizes[], float times[], int len, dtype* x, dtype* y, int N) {
+    
     float millis = 0.0;
     for (int i = 0; i < len; i++) {
         for (int j = 0; j < len; j++) {
@@ -47,17 +54,20 @@ void bench(int len, cudaEvent_t start, const int grid_sizes[], const int block_s
     }
 }
 
-
-void linear_access_bench(cudaEvent_t start, cudaEvent_t end, const int grid_sizes[], 
-    const int block_sizes[], float times[], int len, dtype* x, dtype* y, int N) {
-    
-    bench(len, start, grid_sizes, block_sizes, N, x, y, end, times);
-}
-
 void consecutive_access_bench(cudaEvent_t start, cudaEvent_t end, const int grid_sizes[], 
     const int block_sizes[], float times[], int len, dtype* x, dtype* y, int N) {
     
-    bench(len, start, grid_sizes, block_sizes, N, x, y, end, times);
+    float millis = 0.0;
+    for (int i = 0; i < len; i++) {
+        for (int j = 0; j < len; j++) {
+            cudaEventRecord(start);
+            add_consecutive_access<<<grid_sizes[j], block_sizes[i]>>>(N, x, y);
+            cudaEventRecord(end);
+            cudaEventSynchronize(end);
+            cudaEventElapsedTime(&millis, start, end);
+            times[j + i * len] = millis;
+        }
+    }
 }
 
 void print_stat(const int grid_sizes[], const int block_sizes[], const float times[], const int len, const int N,
