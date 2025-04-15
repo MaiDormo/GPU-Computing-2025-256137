@@ -15,7 +15,26 @@
 */
 
 __global__ void add_shared_memory(const int n, dtype *x, dtype *y) {
+    //Max double that can be loaded inside the shared memory (78*78)
+	//data inside the shared memory
+	extern __shared__ dtype sharedData[];
     
+    int idx = threadIdx.x + blockDim.x * blockIdx.x;
+
+    const int dim = n < 36 ? n : 36;
+    const int x_chunk_dim = dim;
+    const int y_chunk_dim = dim;
+
+    //load to shared memory
+    const int pos_in_shared_vec = idx % dim;
+    sharedData[pos_in_shared_vec] = x[idx]; //load x
+    sharedData[pos_in_shared_vec + dim] = y[idx]; //load y
+    // each thread computes
+    sharedData[pos_in_shared_vec + dim] = sharedData[pos_in_shared_vec + dim] + sharedData[pos_in_shared_vec];
+    // synch thread
+    __syncthreads();
+    //send_back result
+    y[idx] = sharedData[pos_in_shared_vec + dim];
 }
 
 __global__ void add_2d_thread_blocks(const int n, dtype *x, dtype *y) {
