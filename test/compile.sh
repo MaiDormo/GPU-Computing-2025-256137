@@ -5,10 +5,12 @@ if [ $# -eq 0 ]; then
   exit 1
 fi
 
-module load cuda/12.1
+module load /opt/shares/cuda/modules/all/CUDA/12.1.1
 
 filename=$(basename -- "$1")
 name="${filename%.*}"
 
-nvcc --gpu-architecture=sm_80 -m64 -o "$name.exec" "$1"
+nvcc -O3 --use_fast_math --gpu-architecture=sm_89 -m64 \
+     -Xcompiler "-Wall -Wextra -O3" \
+     -o "$name.exec" "$1"
 echo "Compiled $1 into $name.exec"

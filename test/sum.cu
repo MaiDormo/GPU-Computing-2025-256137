@@ -17,19 +17,19 @@
 __global__ void add_linear_access(const int n, dtype *x, dtype* y) {
     const int idx = threadIdx.x + blockDim.x * blockIdx.x;
     const int stride = gridDim.x * blockDim.x;
-    for (int j = idx; j < n; j += stride) {
+    for (int j = idx ; j < n; j += stride) {
         y[j] = x[j] + y[j];
     }
 }
 
 __global__ void add_consecutive_access(const int n, dtype *x, dtype *y) {
-    // because we have only one block we can compute directly the starting position
-    // and final position for each thread
-    const int len = n / blockDim.x;
-    const int start = threadIdx.x * len;
-    for (int i = start; i < start + len; i++) {
-        y[i] = x[i] + y[i];
-    } 
+    const int stride = n / (gridDim.x);
+    const int len = n / (blockDim.x * gridDim.x);
+    const int start = threadIdx.x * len + stride * blockIdx.x;
+    
+    for (int j = start; j < start + len; j++) {
+        y[j] = x[j] + y[j];
+    }
 }
 
 void linear_access_bench(cudaEvent_t start, cudaEvent_t end, const int grid_sizes[], 
@@ -111,23 +111,23 @@ void compute_result(const int grid_sizes[], const int block_sizes[],
 
     print_stat(grid_sizes,block_sizes,times,len,N,NULL, "ms");
 
-    //compute the bandwidth (GB/s)
+    //compute the bandwidth (TB/s)
     for (int i = 0; i < len; i++) {
         for (int j = 0; j < len; j++) {
-            values[i*len+j] = total_bytes /  (times[i*len+j] * 1.0e6); // GB/s
+            values[i*len+j] = total_bytes / times[i*len+j] * 1.0e-9; // GB/s
         }
     }
 
-    print_stat(grid_sizes,block_sizes,times,len,N,values, "GB/s");
+    print_stat(grid_sizes,block_sizes,times,len,N,values, "TB/s");
 
-    //compute the GFLOPS
+    //compute the TFLOPS
     for (int i = 0; i < len; i++) {
         for (int j = 0; j < len; j++) {
-            values[i*len+j] = N / (times[i*len+j] * 1.0e6);
+            values[i*len+j] = N / times[i*len+j] * 1.0e-9;
         }
     }
 
-    print_stat(grid_sizes,block_sizes,times,len,N,values, "GFLOPS");
+    print_stat(grid_sizes,block_sizes,times,len,N,values, "TFLOPS");
     
 }
 
@@ -146,7 +146,7 @@ void consecutive_compute_result(const int grid_sizes[], const int block_sizes[],
 
 int main(int argc, char **argv) {
 
-    const int N = 4096 * 4096 * 16;
+    const int N = 4096 * 1000;
     
     // For benchmarking
     const int len = 6;
