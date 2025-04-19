@@ -184,7 +184,7 @@ int main(int argc, char ** argv) {
 
     read_from_file_and_init(argv[1], &a_val, &a_row, &a_col, &n, &m, &n_val);
 
-    const int thread_per_block = 256;
+    const int thread_per_block = 1024;
     const int block_num = (n + thread_per_block - 1) / thread_per_block;
     
     // Host memory allocations
@@ -276,7 +276,7 @@ int main(int argc, char ** argv) {
     // Calculate bandwidth and computation metrics
     size_t bytes_read = n_val * (sizeof(double) + sizeof(int)) +    // values and col indices
                         (n + 1) * sizeof(int) +                     // row pointers
-                        n_val * sizeof(double);                     // vector reads (worst case)
+                        m * sizeof(double);                     // vector reads (worst case)
     
     size_t bytes_written = n * sizeof(double);                      // result vector
     size_t total_bytes = bytes_read + bytes_written;
