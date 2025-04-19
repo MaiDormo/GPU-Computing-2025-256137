@@ -8,5 +8,4 @@
 #SBATCH --job-name=test
 #SBATCH --output=test-%j.out
 #SBATCH --error=test-%j.err
-module load /opt/shares/cuda/modules/all/CUDA/12.1.1
-srun ~/GPU-Computing-2025-256137/test/sum.exec
+srun ~/GPU-Computing-2025-256137/test/sum_shared.exec

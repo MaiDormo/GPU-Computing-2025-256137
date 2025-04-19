@@ -5,7 +5,7 @@ if [ $# -eq 0 ]; then
   exit 1
 fi
 
-module load /opt/shares/cuda/modules/all/CUDA/12.1.1
+module load CUDA/12.5.0
 
 filename=$(basename -- "$1")
 name="${filename%.*}"
