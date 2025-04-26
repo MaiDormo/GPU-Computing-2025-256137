@@ -10,7 +10,19 @@
 // #include "../include/my_time_lib.h"
 // #include "../include/read_file_lib.h"
 
-void read_from_file_and_init(char * file_path, double ** a_val, int ** a_row, int ** a_col, int * mat_rows, int * mat_cols, int * vec_size) {
+/*
+## Thread & Block Limits
+| Specification | Value |
+|---------------|-------|
+| Warp Size | 32 |
+| Max Threads per Multiprocessor | 1536 |
+| Max Threads per Block | 1024 |
+| Max Thread Block Dimensions | (1024, 1024, 64) |
+| Max Grid Dimensions | (2147483647, 65535, 65535) |
+*/
+
+void read_from_file_and_init(char * file_path, double ** a_val, int ** a_row, int ** a_col, 
+    int * mat_rows, int * mat_cols, int * vec_size) {
     FILE * file;
     const size_t BUFFER_SIZE = 1 * 1024 * 1024; // 1MB
 
@@ -93,6 +105,8 @@ void read_from_file_and_init(char * file_path, double ** a_val, int ** a_row, in
     fclose(file);
 }
 
+//implement a kernel that does the conversion (at least the sorting)
+
 int coo_to_csr(int n_rows, int nnz, 
     const int* a_row, const int* a_col, const double* a_val,
     double* csr_values, int* csr_col_indices, int* csr_row_ptr) {
@@ -155,19 +169,71 @@ int coo_to_csr(int n_rows, int nnz,
 }
 
 
-
-__global__ void spmv(const double *csr_values, const int *csr_row_ptr, const int *csr_col_indices, 
+__global__ void warp_spmv(const double *csr_values, const int *csr_row_ptr, const int *csr_col_indices, 
     const double *vec, double *res, int n) {
     
-    int row = blockDim.x * blockIdx.x + threadIdx.x;
+    const int row = blockIdx.x; //one block per row
+    const int warp_size = 32;
     if (row < n) {
-        double sum = 0.0;
+        // Get the lane ID within the warp (0-31)
+        int lane_id = threadIdx.x % warp_size;
+        
+        double thread_sum = 0.0;
         int row_start = csr_row_ptr[row];
         int row_end = csr_row_ptr[row + 1];
-        for (int j = row_start; j < row_end; j++) {
-            sum += csr_values[j] * vec[csr_col_indices[j]];
+
+
+        for (int j = row_start + lane_id; j < row_end; j += warp_size) {
+            thread_sum += csr_values[j] * vec[csr_col_indices[j]];
         }
-        res[row] = sum;
+
+
+        // Warp reduction - Combine partial sum within the warp, all threads (in the warp) must partecipate 
+        #pragma unroll
+        for (int offset = warp_size / 2; offset > 0; offset /= 2) { 
+            // 0xFFFFFFFF is the warp mask (all threads partecipate)
+            // __shfl_down_sync gets value from thread lane_id + offset
+            thread_sum += __shfl_down_sync(0xFFFFFFFF, thread_sum, offset);
+        }
+
+        //after the sum in the lane_id 0 of each warp there should be the actual sum
+        if (lane_id == 0) {
+            res[row] = thread_sum;
+        }
+    }
+}
+
+__global__ void multi_warp_spmv(const double *csr_values, const int *csr_row_ptr, const int *csr_col_indices, 
+    const double *vec, double *res, int n) {
+    
+    const int warp_size = 32;   
+    const int starting_row = blockIdx.x * blockDim.x / warp_size;
+    const int offset_row = threadIdx.x / warp_size;
+    const int actual_row = starting_row + offset_row;
+    if (actual_row < n) {
+        // Get the lane ID within the warp (0-31)
+        int lane_id = threadIdx.x % warp_size;
+        
+        double thread_sum = 0.0;
+        int row_start = csr_row_ptr[actual_row];
+        int row_end = csr_row_ptr[actual_row + 1];
+
+        for (int j = row_start + lane_id; j < row_end; j += warp_size) {
+            thread_sum += csr_values[j] * vec[csr_col_indices[j]];
+        }
+
+        // Warp reduction - Combine partial sum within the warp, all threads (in the warp) must partecipate
+        #pragma unroll 
+        for (int offset = warp_size / 2; offset > 0; offset /= 2) { 
+            // 0xFFFFFFFF is the warp mask (all threads partecipate)
+            // __shfl_down_sync gets value from thread lane_id + offset
+            thread_sum += __shfl_down_sync(0xFFFFFFFF, thread_sum, offset);
+        }
+
+        //after the sum in the lane_id 0 of each warp there should be the actual sum
+        if (lane_id == 0) {
+            res[actual_row] = thread_sum;
+        }
     }
 }
 
@@ -184,8 +250,10 @@ int main(int argc, char ** argv) {
 
     read_from_file_and_init(argv[1], &a_val, &a_row, &a_col, &n, &m, &n_val);
 
-    const int thread_per_block = 1024;
-    const int block_num = (n + thread_per_block - 1) / thread_per_block;
+    const int warp_size = 32;
+    const int thread_per_block = 256;
+    const int warps_per_block = thread_per_block / warp_size;
+    const int block_num = (n + warps_per_block - 1) / warps_per_block;
     
     // Host memory allocations
     double *h_vec = (double*)malloc(m * sizeof(double));
@@ -228,13 +296,14 @@ int main(int argc, char ** argv) {
     cudaMemcpy(d_csr_row_ptr, h_csr_row_ptr, (n+1) * sizeof(int), cudaMemcpyHostToDevice);
 
     // Run SpMV multiple times to get accurate timing
-    const int NUM_RUNS = 100;
+    const int NUM_RUNS = 50;
     double total_time = 0.0;
 
     double times[NUM_RUNS];
 
     // Warmup run
-    spmv<<<block_num, thread_per_block>>>(d_csr_values, d_csr_row_ptr, d_csr_col_indices, d_vec, d_res, n);
+    multi_warp_spmv<<<block_num, thread_per_block>>>(d_csr_values, d_csr_row_ptr, d_csr_col_indices, d_vec, d_res, n);
+    // warp_spmv<<<block_num, thread_per_block>>>(d_csr_values, d_csr_row_ptr, d_csr_col_indices, d_vec, d_res, n);
     cudaDeviceSynchronize();
 
     cudaEvent_t start, end;
@@ -246,7 +315,8 @@ int main(int argc, char ** argv) {
         //start the event
         cudaEventRecord(start);
 
-        spmv<<<block_num, thread_per_block>>>(d_csr_values, d_csr_row_ptr, d_csr_col_indices, d_vec, d_res, n);
+        multi_warp_spmv<<<block_num, thread_per_block>>>(d_csr_values, d_csr_row_ptr, d_csr_col_indices, d_vec, d_res, n);
+        // warp_spmv<<<block_num, thread_per_block>>>(d_csr_values, d_csr_row_ptr, d_csr_col_indices, d_vec, d_res, n);
         
         //close event
         cudaEventRecord(end);
