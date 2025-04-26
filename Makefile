@@ -44,7 +44,7 @@ $(OBJ_FOLDER)/%.o: $(LIB_FOLDER)/%.c
 # Rule for compiling cuda
 $(BIN_FOLDER)/%.exec: $(SRC_FOLDER)/%.cu $(LIB_OBJECTS)
 	@mkdir -p $(BIN_FOLDER)
-	@bash -c "source /etc/profile.d/modules.sh && module load CUDA/12.5.0 && $(NVCC) $< -o $@ $(NV_OPT)"
+	@bash -c "source /etc/profile.d/modules.sh && module load CUDA/12.3.2 && $(NVCC) $< -o $@ $(NV_OPT)"
 
 # Create necessary directories
 directories:
