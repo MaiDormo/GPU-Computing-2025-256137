@@ -8,111 +8,18 @@
 #include <omp.h>
 //#include <limits.h>
 
-#define dtype double
+#include "../include/read_file_lib.h"
+#include "../include/spmv_type.h"
 
-// #include "../include/my_time_lib.h"
-// #include "../include/read_file_lib.h"
 
-/*
-## Thread & Block Limits
-| Specification | Value |
-|---------------|-------|
-| Warp Size | 32 |
-| Max Threads per Multiprocessor | 1536 |
-| Max Threads per Block | 1024 |
-| Max Thread Block Dimensions | (1024, 1024, 64) |
-| Max Grid Dimensions | (2147483647, 65535, 65535) |
-*/
-
-// --- Struct Definitions ---
-// Structure for CSR format
-struct CSR {
-    dtype * values;
-    int * col_indices;
-    int * row_pointers;
-    int num_rows;
-    int num_cols;
-    int num_non_zeros;
-};
-
-// Structure for COO format
-struct COO {
-    dtype * a_val;
-    int * a_col;
-    int * a_row;
-    int num_rows;
-    int num_cols;
-    int num_non_zeros;
-};
+#define WARP_SIZE 32
+#define BLOCK_SIZE 1024
 
 // --- Function Prototypes ---
-void read_from_file_and_init(char * file_path, struct COO *coo_data);
 int coo_to_csr(const struct COO *coo_data, struct CSR *csr_data);
-__global__ void multi_warp_spmv(const dtype *csr_values, const int *csr_row_ptr, const int *csr_col_indices,
-                                const dtype *vec, dtype *res, int n); // Keep n for row boundary check
+__global__ void vector_csr(const dtype *csr_values, const int *csr_row_ptr, const int *csr_col_indices,
+                                const dtype *vec, dtype *res, int n);
 
-
-// --- File Reading and Initialization ---
-void read_from_file_and_init(char * file_path, struct COO *coo_data) {
-    FILE * file;
-    const size_t BUFFER_SIZE = 1 * 1024 * 1024; // 1MB
-
-    file = fopen(file_path, "r");
-    if (!file) {
-        perror("Error opening file!\n");
-        exit(1);
-    }
-
-    char * buffer = (char*)malloc(BUFFER_SIZE);
-    if (!buffer) {
-        perror("Failed to allocate file buffer");
-        fclose(file);
-        exit(1);
-    }
-    setvbuf(file, buffer, _IOFBF, BUFFER_SIZE);
-
-    char line_buffer[1024];
-    while (fgets(line_buffer, sizeof(line_buffer), file)) {
-        if (line_buffer[0] != '%') break;
-    }
-
-    int n, m, nnz;
-    if (sscanf(line_buffer, "%d %d %d", &n, &m, &nnz) != 3) {
-        perror("Error reading graph metadata");
-        free(buffer); fclose(file); exit(-1);
-    }
-    coo_data->num_rows = n;
-    coo_data->num_cols = m;
-    coo_data->num_non_zeros = nnz;
-
-    coo_data->a_val = (dtype*)malloc(nnz * sizeof(dtype));
-    coo_data->a_row = (int*)malloc(nnz * sizeof(int));
-    coo_data->a_col = (int*)malloc(nnz * sizeof(int));
-
-    if (!coo_data->a_val || !coo_data->a_row || !coo_data->a_col) {
-        perror("Failed to allocate memory for COO matrix data");
-        free(buffer); fclose(file);
-        free(coo_data->a_val); free(coo_data->a_row); free(coo_data->a_col);
-        exit(1);
-    }
-
-    int r, c;
-    dtype v;
-    for (int i = 0; i < nnz; i++) {
-        if (fscanf(file, "%d %d %lf", &r, &c, &v) != 3){
-            fprintf(stderr, "Error reading entry %d\n", i);
-            free(buffer); fclose(file);
-            free(coo_data->a_val); free(coo_data->a_row); free(coo_data->a_col);
-            exit(1);
-        }
-        coo_data->a_row[i] = r - 1;
-        coo_data->a_col[i] = c - 1;
-        coo_data->a_val[i] = v;
-    }
-
-    free(buffer);
-    fclose(file);
-}
 
 // --- COO to CSR Conversion ---
 int coo_to_csr(const struct COO *coo_data, struct CSR *csr_data) {
@@ -191,16 +98,14 @@ int coo_to_csr(const struct COO *coo_data, struct CSR *csr_data) {
 
 
 // --- SpMV Kernel ---
-__global__ void multi_warp_spmv(const dtype *csr_values, const int *csr_row_ptr, const int *csr_col_indices,
+__global__ void vector_csr(const dtype *csr_values, const int *csr_row_ptr, const int *csr_col_indices,
                                 const dtype *vec, dtype *res, int n) { // n is num_rows
 
-    const int warp_size = 32;
-    const int block_threads = blockDim.x;
     const int tid = threadIdx.x;
-    const int warps_per_block = block_threads / warp_size;
+    const int warps_per_block = BLOCK_SIZE / WARP_SIZE;
     const int block_start_row = blockIdx.x * warps_per_block;
-    const int warp_id = tid / warp_size;
-    const int lane_id = tid % warp_size;
+    const int warp_id = tid / WARP_SIZE;
+    const int lane_id = tid % WARP_SIZE;
     const int actual_row = block_start_row + warp_id;
 
     if (actual_row < n) {
@@ -208,14 +113,14 @@ __global__ void multi_warp_spmv(const dtype *csr_values, const int *csr_row_ptr,
         int row_start = csr_row_ptr[actual_row];
         int row_end = csr_row_ptr[actual_row + 1];
 
-        for (int j = row_start + lane_id; j < row_end; j += warp_size) {
+        for (int j = row_start + lane_id; j < row_end; j += WARP_SIZE) {
             int col = csr_col_indices[j];
             thread_sum += csr_values[j] * __ldg(&vec[col]);
         }
 
         #pragma unroll
-        for (int offset = warp_size / 2; offset > 0; offset /= 2) {
-            thread_sum += __shfl_down_sync(0xFFFFFFFF, thread_sum, offset);
+        for (int delta = WARP_SIZE / 2; delta > 0; delta >>= 1) {
+            thread_sum += __shfl_down_sync(0xFFFFFFFF, thread_sum, delta);
         }
 
         if (lane_id == 0) {
@@ -224,8 +129,81 @@ __global__ void multi_warp_spmv(const dtype *csr_values, const int *csr_row_ptr,
     }
 }
 
+
+__global__ void vector_csr_unrolled(const dtype *csr_values, const int *csr_row_ptr, const int *csr_col_indices,
+                                const dtype *vec, dtype *res, int n) { // n is num_rows
+
+    const int tid = threadIdx.x;
+    const int warps_per_block = BLOCK_SIZE / WARP_SIZE;
+    const int block_start_row = blockIdx.x * warps_per_block;
+    const int warp_id = tid / WARP_SIZE;
+    const int lane_id = tid % WARP_SIZE;
+    const int actual_row = block_start_row + warp_id;
+
+    __shared__ volatile dtype vals[BLOCK_SIZE];
+
+    if (actual_row < n) {
+        dtype thread_sum = 0.0;
+        int row_start = csr_row_ptr[actual_row];
+        int row_end = csr_row_ptr[actual_row + 1];
+
+        for (int j = row_start + lane_id; j < row_end; j += WARP_SIZE) {
+            int col = csr_col_indices[j];
+            thread_sum += csr_values[j] * __ldg(&vec[col]);
+        }
+
+        vals[tid] = thread_sum;
+        __syncthreads();
+
+
+        // Reduce partial sums loop unrolled
+        if (lane_id < 16) vals[tid] += vals[tid + 16];
+        if (lane_id < 8) vals[tid] += vals[tid + 8];
+        if (lane_id < 4) vals[tid] += vals[tid + 4];
+        if (lane_id < 2) vals[tid] += vals[tid + 2];
+        if (lane_id < 1) vals[tid] += vals[tid + 1];
+        __syncthreads();
+
+        if (lane_id == 0) {
+            res[actual_row] = vals[tid];
+        }
+    }
+}
+
+
+__global__ void adaptive_csr(const dtype *csr_values, const int *csr_row_ptr,
+                            const int *csr_col_indices, const dtype *vec,
+                            dtype *res, const int *row_blocks, int n) {
+    //TODO implement
+    /*
+        General idea behind this implementation:
+            -> warp per row:
+            [PROS]: can be used as a lower bound of computation for the single row
+            [CONS]: if a row contains a lot of NNZ values, the computation becomes slow
+        
+        To improve this concept, i asked myself these question: 
+        - what if we can dispatch more warp per rows?
+        - what is the minimal number of NNZ that a warp can handle
+        - what could be the maximum number that a single warp should handle (possibly a multiple of the previous)?
+
+        Implementing a good access pattern for vec is really hard, so for now i will use vector cache
+
+    
+    */
+}
+
+int adaptive_row_selection(const int *csr_row_ptr, int rows, int *row_blocks) {
+    //TODO implement
+
+    // inside this function i would like to compute how many rows are dispatched per block,
+    // accounting for the fact that a warp is 32 threads and a block has 1024 threads, 
+    // -> so at most a block can handle 8 rows!
+}
+
+
 // --- Main Function ---
-int main(int argc, char ** argv) {
+int main(int argc, char ** argv) { 
+    
     if (argc != 2) {
         printf("Usage: <./bin/spmv_*> <path/to/file.mtx>\n");
         return -1;
@@ -249,13 +227,16 @@ int main(int argc, char ** argv) {
     h_csr.values = (dtype*)malloc(nnz * sizeof(dtype));
     h_csr.col_indices = (int*)malloc(nnz * sizeof(int));
     h_csr.row_pointers = (int*)calloc(n + 1, sizeof(int)); // Zero initialization is important
+    int *h_block_rows = (int*)calloc(n, sizeof(int));
 
-    if (!h_vec || !h_res || !h_csr.values || !h_csr.col_indices || !h_csr.row_pointers) {
+
+    if (!h_vec || !h_res || !h_csr.values || !h_csr.col_indices || !h_csr.row_pointers || !h_block_rows) {
         perror("Failed to allocate host memory");
         // Free any successfully allocated memory before exiting
         free(h_coo.a_val); free(h_coo.a_row); free(h_coo.a_col);
         free(h_vec); free(h_res);
         free(h_csr.values); free(h_csr.col_indices); free(h_csr.row_pointers);
+        free(h_block_rows);
         return -1;
     }
 
@@ -270,6 +251,7 @@ int main(int argc, char ** argv) {
          free(h_coo.a_val); free(h_coo.a_row); free(h_coo.a_col);
          free(h_vec); free(h_res);
          free(h_csr.values); free(h_csr.col_indices); free(h_csr.row_pointers);
+         free(h_block_rows);
          return -1;
     }
 
@@ -278,9 +260,15 @@ int main(int argc, char ** argv) {
     free(h_coo.a_row); h_coo.a_row = NULL;
     free(h_coo.a_col); h_coo.a_col = NULL;
 
+    int countRowBlocks = adaptive_row_selection(h_csr.row_pointers, n, h_block_rows);
+
+
+    
+
     // --- Device Data Structures ---
     struct CSR d_csr; // Holds device pointers
     dtype *d_vec = NULL, *d_res = NULL;
+    int * d_block_rows;
 
     // --- Allocate Device Memory ---
     cudaMalloc(&d_vec, m * sizeof(dtype));
@@ -288,10 +276,10 @@ int main(int argc, char ** argv) {
     cudaMalloc(&d_csr.values, nnz * sizeof(dtype));
     cudaMalloc(&d_csr.col_indices, nnz * sizeof(int));
     cudaMalloc(&d_csr.row_pointers, (n + 1) * sizeof(int));
+    cudaMalloc(&d_block_rows, countRowBlocks * sizeof(int));
     d_csr.num_rows = n;
     d_csr.num_cols = m;
     d_csr.num_non_zeros = nnz;
-
 
     // --- Copy Data to Device ---
     cudaMemcpy(d_vec, h_vec, m * sizeof(dtype), cudaMemcpyHostToDevice);
@@ -299,15 +287,18 @@ int main(int argc, char ** argv) {
     cudaMemcpy(d_csr.values, h_csr.values, nnz * sizeof(dtype), cudaMemcpyHostToDevice);
     cudaMemcpy(d_csr.col_indices, h_csr.col_indices, nnz * sizeof(int), cudaMemcpyHostToDevice);
     cudaMemcpy(d_csr.row_pointers, h_csr.row_pointers, (n + 1) * sizeof(int), cudaMemcpyHostToDevice);
-
+    cudaMemcpy(d_block_rows, h_block_rows, countRowBlocks * sizeof(int), cudaMemcpyHostToDevice);
 
     // --- Kernel Launch Configuration ---
-    const int warp_size = 32;
-    const int thread_per_block = 1024; // Choose appropriate block size
-    const int warps_per_block = thread_per_block / warp_size;
+    const int warps_per_block = BLOCK_SIZE / WARP_SIZE;
+    const int rows_per_block = warps_per_block / 2;
     const int block_num = (n + warps_per_block - 1) / warps_per_block;
-    // Adjust shared memory size if caching is re-introduced
-    const size_t dynamic_shared_mem = 0; //!TODO configure shared_mem
+    const size_t shared_mem = BLOCK_SIZE * sizeof(dtype); //!TODO configure shared_mem
+
+
+    printf("Matrix dimensions: %d x %d with %d non-zeros\n", n, m, nnz);
+    printf("Adaptive row blocks: %d\n", countRowBlocks);
+    printf("Shared memory size: %zu bytes\n", shared_mem);
 
     // --- Timing Setup ---
     const int NUM_RUNS = 50;
@@ -318,16 +309,23 @@ int main(int argc, char ** argv) {
     cudaEventCreate(&end);
 
     // --- Warmup Run ---
-    multi_warp_spmv<<<block_num, thread_per_block, dynamic_shared_mem>>>(
+    // vector_csr_unrolled<<<block_num, thread_per_block, dynamic_shared_mem>>>(
+        // d_csr.values, d_csr.row_pointers, d_csr.col_indices, d_vec, d_res, n);
+    vector_csr<<<block_num, BLOCK_SIZE, shared_mem>>>(
         d_csr.values, d_csr.row_pointers, d_csr.col_indices, d_vec, d_res, n);
-    cudaDeviceSynchronize(); // Check for launch errors
+    
+    cudaDeviceSynchronize();
 
     // --- Timed Runs ---
     for (int run = 0; run < NUM_RUNS; run++) {
         cudaEventRecord(start);
 
-        multi_warp_spmv<<<block_num, thread_per_block, dynamic_shared_mem>>>(
+        // vector_csr_unrolled<<<block_num, thread_per_block, dynamic_shared_mem>>>(
+            // d_csr.values, d_csr.row_pointers, d_csr.col_indices, d_vec, d_res, n);
+        
+        vector_csr<<<block_num, BLOCK_SIZE, shared_mem>>>(
             d_csr.values, d_csr.row_pointers, d_csr.col_indices, d_vec, d_res, n);
+            
 
         cudaEventRecord(end);
         cudaEventSynchronize(end);
@@ -351,13 +349,14 @@ int main(int argc, char ** argv) {
 
     size_t bytes_read = (size_t)nnz * (sizeof(dtype) + sizeof(int)) + // values and col indices
                         (size_t)(n + 1) * sizeof(int) +               // row pointers
-                        (size_t)m * sizeof(dtype);                    // vector reads (worst case estimate)
+                        (size_t)m * sizeof(dtype) +      // vector reads (worst case estimate)
+                        (size_t)countRowBlocks * sizeof(int);
     size_t bytes_written = (size_t)n * sizeof(dtype);                 // result vector
     size_t total_bytes = bytes_read + bytes_written;
 
-    dtype bandwidth = total_bytes / (avg_time * 1.0e9);  // GB/s
-    dtype flops = 2.0 * nnz;
-    dtype gflops = flops / (avg_time * 1.0e9);  // GFLOPS
+    double bandwidth = total_bytes / (avg_time * 1.0e9);  // GB/s
+    double flops = 2.0 * nnz;
+    double gflops = flops / (avg_time * 1.0e9);  // GFLOPS
 
     // --- Print Results ---
     printf("\nSpMV Performance CSR:\n");
@@ -383,12 +382,14 @@ int main(int argc, char ** argv) {
     cudaFree(d_csr.values);
     cudaFree(d_csr.col_indices);
     cudaFree(d_csr.row_pointers);
+    cudaFree(d_block_rows);
 
     free(h_vec);
     free(h_res);
     free(h_csr.values);
     free(h_csr.col_indices);
     free(h_csr.row_pointers);
+    free(h_block_rows);
 
     return 0;
 }
