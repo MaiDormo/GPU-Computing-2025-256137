@@ -103,7 +103,7 @@ int main(int argc, char ** argv) {
     double * a_val;
     int n, m, n_val;
 
-    read_from_file_and_init(argv[1], &a_val, &a_row, &a_col, &n, &m, &n_val);
+    _read_from_file_and_init(argv[1], &a_val, &a_row, &a_col, &n, &m, &n_val);
 
 
     double * vec = aligned_alloc(64, m * sizeof(double));
