@@ -10,7 +10,7 @@ module load CUDA/12.3.2
 filename=$(basename -- "$1")
 name="${filename%.*}"
 
-nvcc -O3 --use_fast_math --gpu-architecture=sm_89 -m64 \
+nvcc -O3 --use_fast_math --gpu-architecture=sm_80 -m64 \
      -Xcompiler "-Wall -Wextra -O3" \
      -o "$name.exec" "$1" -lcusparse
 echo "Compiled $1 into $name.exec"

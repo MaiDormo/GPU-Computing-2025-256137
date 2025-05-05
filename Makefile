@@ -4,7 +4,7 @@ NVCC := nvcc
 
 # create a makefile variable named OPT with your favorite C flags (at least with -std=c99 -O3)
 OPT := -g -std=c11 -O3 -Wall -Wextra -lm -march=native -funroll-loops
-NV_OPT := -O3 --gpu-architecture=sm_89 -m64
+NV_OPT := -O3 --gpu-architecture=sm_80 -m64
 
 BIN_FOLDER := bin
 OBJ_FOLDER := obj
@@ -44,7 +44,7 @@ $(OBJ_FOLDER)/%.o: $(LIB_FOLDER)/%.c
 # Rule for compiling cuda
 $(BIN_FOLDER)/%.exec: $(SRC_FOLDER)/%.cu $(LIB_OBJECTS)
 	@mkdir -p $(BIN_FOLDER)
-	@bash -c "source /etc/profile.d/modules.sh && module load CUDA/12.3.2 && $(NVCC) $< -o $@ $(NV_OPT)"
+	@bash -c "source /etc/profile.d/modules.sh && module load CUDA/12.3.2 && $(NVCC) $< $(LIB_OBJECTS) -o $@ $(NV_OPT)"
 
 # Create necessary directories
 directories:
