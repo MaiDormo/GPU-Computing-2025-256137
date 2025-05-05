@@ -8,6 +8,7 @@
 #SBATCH --job-name=test
 #SBATCH --output=test-%j.out
 #SBATCH --error=test-%j.err
-srun ~/GPU-Computing-2025-256137/bin/spmv_gpu_csr.exec data/mawi_201512020330/mawi_201512020330.mtx
-
-# srun ~/GPU-Computing-2025-256137/bin/spmv_gpu_csr.exec data/662_bus/662_bus.mtx
+# srun ~/GPU-Computing-2025-256137/bin/spmv_gpu_csr.exec data/mawi_201512020330/mawi_201512020330.mtx
+# srun ~/GPU-Computing-2025-256137/bin/spmv_gpu_csr.exec ~/GPU-Computing-2025-256137/data/Goodwin_127/Goodwin_127.mtx
+# srun ~/GPU-Computing-2025-256137/bin/spmv_gpu_csr.exec ~/GPU-Computing-2025-256137/data/ML_Geer/ML_Geer.mtx
+srun ~/GPU-Computing-2025-256137/bin/spmv_gpu_csr.exec data/662_bus/662_bus.mtx 
