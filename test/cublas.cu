@@ -324,11 +324,15 @@ int main(int argc, char ** argv) {
 
     // First few elements of result vector
     printf("\nFirst non zero element of result vector (or fewer if n < 10):\n");
+    int nnz_counter = 0;
     for (int i = 0; i < n; i++) {
         if (h_res[i] == 0.0)
             continue;
-        printf("%f ", h_res[i]);
-        break;
+        else if (nnz_counter++ < 10) {
+            printf("%f ",h_res[i]);
+        } else {
+            break;
+        }
     }
     printf("\n");
 

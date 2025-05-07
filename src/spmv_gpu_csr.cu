@@ -21,6 +21,8 @@ __global__ void vector_csr(const dtype *csr_values, const int *csr_row_ptr, cons
                                 const dtype *vec, dtype *res, int n);
 
 
+
+
 // --- COO to CSR Conversion ---
 int coo_to_csr(const struct COO *coo_data, struct CSR *csr_data) {
     int n_rows = coo_data->num_rows;
@@ -96,10 +98,39 @@ int coo_to_csr(const struct COO *coo_data, struct CSR *csr_data) {
     return 0;
 }
 
+void print_matrix_stats(struct CSR *csr_data) {
+    //number of rows
+    //number of cols
+    //number of nnz
+   
+    //nnz per row
+    //percentage of non zero compared to all values
+
+    double avg_nnz_per_row = csr_data->num_non_zeros / csr_data->num_rows;
+    double percentage_nnz = csr_data->num_non_zeros / (csr_data->num_cols * csr_data->num_rows); 
+
+    int min_nnz = csr_data->num_non_zeros;
+    int max_nnz = 0;
+    for (int i = 0; i < csr_data->num_rows; i++) {
+        int nnz = csr_data->row_pointers[i+1] - csr_data->row_pointers[i];
+        min_nnz = min_nnz > nnz ? nnz : min_nnz;
+        max_nnz = max_nnz < nnz ? nnz : max_nnz;
+    }
+    
+    printf("Number of Columns: %d\n", csr_data->num_cols);
+    printf("Number of Rows: %d\n", csr_data->num_rows);
+    printf("Number of NNZ: %d\n", csr_data->num_non_zeros);
+    printf("Average NNZ per Row: %f\n", avg_nnz_per_row);
+    printf("Min NNZ: %d\n", min_nnz);
+    printf("Max NNZ: %d\n", max_nnz);
+    printf("Percentage of NNZ: %f%\n", percentage_nnz*100);
+}
+
+
 
 // --- SpMV Kernel ---
 __global__ void vector_csr(const dtype *csr_values, const int *csr_row_ptr, const int *csr_col_indices,
-                                const dtype *vec, dtype *res, int n) { // n is num_rows
+                          const dtype *vec, dtype *res, int n) { // n is num_rows
 
     const int tid = threadIdx.x;
     const int warps_per_block = BLOCK_SIZE / WARP_SIZE;
@@ -113,6 +144,7 @@ __global__ void vector_csr(const dtype *csr_values, const int *csr_row_ptr, cons
         int row_start = csr_row_ptr[actual_row];
         int row_end = csr_row_ptr[actual_row + 1];
 
+        // Improved vector access using texture memory
         for (int j = row_start + lane_id; j < row_end; j += WARP_SIZE) {
             int col = csr_col_indices[j];
             thread_sum += csr_values[j] * __ldg(&vec[col]);
@@ -128,6 +160,11 @@ __global__ void vector_csr(const dtype *csr_values, const int *csr_row_ptr, cons
         }
     }
 }
+
+
+
+
+
 
 
 __global__ void vector_csr_unrolled(const dtype *csr_values, const int *csr_row_ptr, const int *csr_col_indices,
@@ -174,30 +211,123 @@ __global__ void vector_csr_unrolled(const dtype *csr_values, const int *csr_row_
 __global__ void adaptive_csr(const dtype *csr_values, const int *csr_row_ptr,
                             const int *csr_col_indices, const dtype *vec,
                             dtype *res, const int *row_blocks, int n) {
-    //TODO implement
-    /*
-        General idea behind this implementation:
-            -> warp per row:
-            [PROS]: can be used as a lower bound of computation for the single row
-            [CONS]: if a row contains a lot of NNZ values, the computation becomes slow
+   __shared__ volatile dtype SHARED_MEM[BLOCK_SIZE];
+
+    const int tid = threadIdx.x;
+    const int WARP_NUM = tid / WARP_SIZE;
+    const int WARP_ID = tid % WARP_SIZE;
+
+    int block_row_start = row_blocks[blockIdx.x];
+    int block_row_end = row_blocks[blockIdx.x + 1];
+    int num_rows = block_row_end - block_row_start;
+    if (num_rows > 1) {
+        //that means we have a warp per row
+        int warp_row_index = block_row_start + WARP_NUM;
+        int warp_row_start = csr_row_ptr[warp_row_index];
+        int warp_row_end = csr_row_ptr[warp_row_index + 1];
+        int nnz = warp_row_end - warp_row_start;
+        dtype thread_sum = 0.0;
         
-        To improve this concept, i asked myself these question: 
-        - what if we can dispatch more warp per rows?
-        - what is the minimal number of NNZ that a warp can handle
-        - what could be the maximum number that a single warp should handle (possibly a multiple of the previous)?
+        for (int i = warp_row_start + WARP_ID; i < warp_row_end; i += WARP_SIZE) {
+            thread_sum += csr_values[i] * __ldg(&vec[csr_col_indices[i]]);
+        }
 
-        Implementing a good access pattern for vec is really hard, so for now i will use vector cache
+        //warp reduction
+        #pragma unroll
+        for (int delta = WARP_SIZE / 2; delta > 0; delta >>= 1) {
+            thread_sum += __shfl_down_sync(0xFFFFFFFF, thread_sum, delta);
+        }
 
-    
-    */
+        if (WARP_ID == 0) {
+            res[warp_row_index] = thread_sum;
+        }
+        
+    } else {
+        //that means we have a block per row
+        int row_idx = block_row_start;
+        int row_start = csr_row_ptr[block_row_start];
+        int row_end = csr_row_ptr[block_row_end];
+        int nnz = row_end - row_start;
+        dtype thread_sum = 0.0;
+        for (int i = row_start + tid; i < row_end; i += blockDim.x) {
+            thread_sum += csr_values[i] * __ldg(&vec[csr_col_indices[i]]);
+        }
+
+        //warp reduction
+        #pragma unroll
+        for (int delta = WARP_SIZE / 2; delta > 0; delta >>= 1) {
+            thread_sum += __shfl_down_sync(0xFFFFFFFF, thread_sum, delta);
+        }
+
+        //one thread of each warp saves on shared memory
+        if (WARP_ID == 0) {
+            SHARED_MEM[WARP_NUM] = thread_sum;
+        }
+
+        if (tid < WARP_SIZE) {
+            #pragma unroll
+            for (int delta = WARP_SIZE / 2; delta > 0; delta >>= 1) {
+                thread_sum += __shfl_down_sync(0xFFFFFFFF, thread_sum, delta);
+            }
+
+            if (tid == 0)
+                res[row_idx] = thread_sum;
+        }
+    }
 }
 
 int adaptive_row_selection(const int *csr_row_ptr, int rows, int *row_blocks) {
-    //TODO implement
 
     // inside this function i would like to compute how many rows are dispatched per block,
     // accounting for the fact that a warp is 32 threads and a block has 1024 threads, 
     // -> so at most a block can handle 8 rows!
+    const int MAX_ROWS_PER_BLOCK = BLOCK_SIZE / WARP_SIZE;
+    const int MAX_NNZ_PER_WARP = WARP_SIZE * 4;
+    const int MAX_NNZ_PER_BLOCK = MAX_NNZ_PER_WARP * MAX_ROWS_PER_BLOCK;
+    const int VERY_DENSE_ROW = MAX_NNZ_PER_WARP * 4;
+
+    row_blocks[0] = 0;
+    int block_idx = 1;
+    int current_block_rows = 0;
+    int current_block_nnz = 0;
+    
+    for (int row = 0; row < rows; row++) {
+        int row_nnz = csr_row_ptr[row+1] - csr_row_ptr[row];
+
+        // Case 1: Very dense row - put in its own block
+        if (row_nnz > VERY_DENSE_ROW) {
+            // if we've accumulated rows, finish the previous block
+            if (current_block_rows > 0) {
+                row_blocks[block_idx++] = row;
+                current_block_rows = 0;
+                current_block_nnz = 0;
+            }
+
+            //create a dedicated block for this row
+            row_blocks[block_idx++] = row + 1;
+            continue;
+
+        }
+        
+        // Case 2: Adding this row would exceed block limits
+        if ((current_block_rows + 1) > MAX_ROWS_PER_BLOCK || 
+            (current_block_nnz + row_nnz > MAX_NNZ_PER_BLOCK)) {
+                row_blocks[block_idx++] = row;
+                current_block_rows = 1;
+                current_block_nnz = row_nnz;
+        } else {
+            current_block_rows++;
+            current_block_nnz += row_nnz;
+        }
+
+    }
+
+    // Handle any remaining rows
+    if (current_block_rows > 0) {
+        row_blocks[block_idx++] = rows;
+    }
+
+    return block_idx;
 }
 
 
@@ -262,8 +392,7 @@ int main(int argc, char ** argv) {
 
     int countRowBlocks = adaptive_row_selection(h_csr.row_pointers, n, h_block_rows);
 
-
-    
+    printf("Number of rowBlocks: %d\n", countRowBlocks);
 
     // --- Device Data Structures ---
     struct CSR d_csr; // Holds device pointers
@@ -296,9 +425,7 @@ int main(int argc, char ** argv) {
     const size_t shared_mem = BLOCK_SIZE * sizeof(dtype); //!TODO configure shared_mem
 
 
-    printf("Matrix dimensions: %d x %d with %d non-zeros\n", n, m, nnz);
-    printf("Adaptive row blocks: %d\n", countRowBlocks);
-    printf("Shared memory size: %zu bytes\n", shared_mem);
+    print_matrix_stats(&h_csr);
 
     // --- Timing Setup ---
     const int NUM_RUNS = 50;
@@ -311,8 +438,9 @@ int main(int argc, char ** argv) {
     // --- Warmup Run ---
     // vector_csr_unrolled<<<block_num, thread_per_block, dynamic_shared_mem>>>(
         // d_csr.values, d_csr.row_pointers, d_csr.col_indices, d_vec, d_res, n);
-    vector_csr<<<block_num, BLOCK_SIZE, shared_mem>>>(
-        d_csr.values, d_csr.row_pointers, d_csr.col_indices, d_vec, d_res, n);
+    vector_csr<<<block_num, BLOCK_SIZE, shared_mem>>>(d_csr.values, d_csr.row_pointers, d_csr.col_indices, d_vec, d_res, n);
+
+    // adaptive_csr<<<block_num, BLOCK_SIZE, shared_mem>>>(d_csr.values, d_csr.row_pointers, d_csr.col_indices, d_vec, d_res, d_block_rows, n);
     
     cudaDeviceSynchronize();
 
@@ -325,6 +453,10 @@ int main(int argc, char ** argv) {
         
         vector_csr<<<block_num, BLOCK_SIZE, shared_mem>>>(
             d_csr.values, d_csr.row_pointers, d_csr.col_indices, d_vec, d_res, n);
+
+        // adaptive_csr<<<block_num, BLOCK_SIZE, shared_mem>>>(
+        //     d_csr.values, d_csr.row_pointers, d_csr.col_indices, d_vec, d_res, d_block_rows, n
+        // );
             
 
         cudaEventRecord(end);

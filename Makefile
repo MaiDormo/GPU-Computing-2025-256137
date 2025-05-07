@@ -4,7 +4,7 @@ NVCC := nvcc
 
 # create a makefile variable named OPT with your favorite C flags (at least with -std=c99 -O3)
 OPT := -g -std=c11 -O3 -Wall -Wextra -lm -march=native -funroll-loops
-NV_OPT := -O3 --gpu-architecture=sm_80 -m64
+NV_OPT := -O3 --gpu-architecture=sm_89 -m64
 
 BIN_FOLDER := bin
 OBJ_FOLDER := obj
