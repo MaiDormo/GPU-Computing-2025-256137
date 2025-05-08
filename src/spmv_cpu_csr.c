@@ -8,12 +8,21 @@
 
 #include "../include/my_time_lib.h"
 #include "../include/read_file_lib.h"
+#include "../include/spmv_type.h"
 
-int coo_to_csr(int n_rows, int nnz, 
-    const int* a_row, const int* a_col, const double* a_val,
-    double* csr_values, int* csr_col_indices, int* csr_row_ptr) {
+// Convert from COO to CSR format using the defined structs
+int coo_to_csr(const struct COO *coo_data, struct CSR *csr_data) {
+    int n_rows = coo_data->num_rows;
+    int nnz = coo_data->num_non_zeros;
+    const int* a_row = coo_data->a_row;
+    const int* a_col = coo_data->a_col;
+    const dtype* a_val = coo_data->a_val;
 
-    //error handling
+    dtype* csr_values = csr_data->values;
+    int* csr_col_indices = csr_data->col_indices;
+    int* csr_row_ptr = csr_data->row_pointers;
+
+    // Error handling
     if (n_rows <= 0 || nnz < 0) return -1;
     if (nnz > 0 && (!a_row || !a_col || !a_val)) return -1;
     if (!csr_values || !csr_col_indices || !csr_row_ptr) return -1;
@@ -30,8 +39,8 @@ int coo_to_csr(int n_rows, int nnz,
         csr_row_ptr[i + 1] += csr_row_ptr[i];
     }
 
-    // Copy values and column indicies to their correct positions
-    int * temp_row_counts = (int *)calloc(n_rows,sizeof(int));
+    // Copy values and column indices to their correct positions
+    int * temp_row_counts = (int *)calloc(n_rows, sizeof(int));
     if (!temp_row_counts) return -1;
 
     for (int i = 0; i < nnz; i++) {
@@ -52,7 +61,7 @@ int coo_to_csr(int n_rows, int nnz,
 
         for (int j = row_start + 1; j < row_end; j++) {
             int col = csr_col_indices[j];
-            double val = csr_values[j];
+            dtype val = csr_values[j];
             int k = j - 1;
 
             while (k >= row_start && csr_col_indices[k] > col) {
@@ -66,15 +75,24 @@ int coo_to_csr(int n_rows, int nnz,
         }
     }
 
+    // Update metadata
+    csr_data->num_rows = coo_data->num_rows;
+    csr_data->num_cols = coo_data->num_cols;
+    csr_data->num_non_zeros = coo_data->num_non_zeros;
+
     return 0;
 }
 
-// Matrix-vector product function (SpMV) - Single-threaded
-void spmv(const double *csr_values, const int *csr_row_ptr, const int *csr_col_indices,
-          const double *vec, double *res, int n) {
+// Matrix-vector product function (SpMV) using CSR format
+void spmv(const struct CSR *csr_data, const dtype *vec, dtype *res) {
+    const int n = csr_data->num_rows;
+    const dtype *csr_values = csr_data->values;
+    const int *csr_row_ptr = csr_data->row_pointers;
+    const int *csr_col_indices = csr_data->col_indices;
+    
     // Perform SpMV
     for (int i = 0; i < n; i++) {
-        double sum = 0.0;
+        dtype sum = 0.0;
         const int start = csr_row_ptr[i];
         const int end = csr_row_ptr[i+1];
 
@@ -91,66 +109,60 @@ int main(int argc, char ** argv) {
         return -1;
     }
 
-    int * a_row;
-    int * a_col;
-    double * a_val;
-    int n, m, n_val;
+    // --- Host Data Structures ---
+    struct COO coo_data;
+    struct CSR csr_data;
+    dtype *vec = NULL;
+    dtype *res = NULL;
 
-    _read_from_file_and_init(argv[1], &a_val, &a_row, &a_col, &n, &m, &n_val);
+    // --- Read Matrix in COO format ---
+    read_from_file_and_init(argv[1], &coo_data);
+    int n = coo_data.num_rows;
+    int m = coo_data.num_cols;
+    int nnz = coo_data.num_non_zeros;
 
+    // --- Allocate Host Memory ---
+    vec = (dtype*)malloc(m * sizeof(dtype));
+    res = (dtype*)malloc(n * sizeof(dtype));
+    csr_data.values = (dtype*)malloc(nnz * sizeof(dtype));
+    csr_data.col_indices = (int*)malloc(nnz * sizeof(int));
+    csr_data.row_pointers = (int*)calloc(n + 1, sizeof(int));
 
-    double * vec = (double*)malloc(m * sizeof(double));
-    if (!vec) { perror("Failed to allocate vec"); return -1; }
+    // --- Initialize Vectors ---
     for (int i = 0; i < m; i++) {
         vec[i] = 1.0;
     }
+    memset(res, 0, n * sizeof(dtype));
 
-    double * res = (double*)malloc(n*sizeof(double));
-    if (!res) { perror("Failed to allocate res"); free(vec); return -1; }
-    // Initialize res to zero before spmv if not done inside
-    memset(res, 0, n * sizeof(double));
-
-
-    double * csr_values = (double*)malloc(n_val * sizeof(double));
-    if (!csr_values) { perror("Failed to allocate csr_values"); free(vec); free(res); return -1; }
-
-    int * csr_col_indices = (int*)malloc(n_val * sizeof(int));
-    if (!csr_col_indices) { perror("Failed to allocate csr_col_indices"); free(vec); free(res); free(csr_values); return -1; }
-
-    int * csr_row_ptr = (int*)calloc(n + 1,sizeof(int));
-    if (!csr_row_ptr) { perror("Failed to allocate csr_row_ptr"); free(vec); free(res); free(csr_values); free(csr_col_indices); return -1; }
-
-
-    if (coo_to_csr(n,n_val,a_row,a_col,a_val,csr_values,csr_col_indices,csr_row_ptr) != 0) {
+    // --- Convert COO to CSR ---
+    if (coo_to_csr(&coo_data, &csr_data) != 0) {
         fprintf(stderr, "Error during COO to CSR conversion.\n");
         // Free all allocated memory before exiting
-        free(a_row); free(a_col); free(a_val);
+        free(coo_data.a_val); free(coo_data.a_row); free(coo_data.a_col);
         free(vec); free(res);
-        free(csr_values); free(csr_col_indices); free(csr_row_ptr);
+        free(csr_data.values); free(csr_data.col_indices); free(csr_data.row_pointers);
         return -1;
     }
 
-    free(a_row);
-    free(a_col);
-    free(a_val);
+    // Free original COO data as we don't need it anymore
+    free(coo_data.a_val); free(coo_data.a_row); free(coo_data.a_col);
 
     // Run SpMV multiple times to get accurate timing
-    const int NUM_RUNS = 100;
+    const int NUM_RUNS = 50;
     double total_time = 0.0;
-
     double times[NUM_RUNS];
 
     // Warmup run
-    spmv(csr_values, csr_row_ptr, csr_col_indices, vec, res, n);
+    spmv(&csr_data, vec, res);
 
     // Timed runs
     for (int run = 0; run < NUM_RUNS; run++) {
-        memset(res, 0, n * sizeof(double)); 
+        memset(res, 0, n * sizeof(dtype)); 
 
         TIMER_DEF(0);
         TIMER_START(0);
 
-        spmv(csr_values, csr_row_ptr, csr_col_indices, vec, res, n);
+        spmv(&csr_data, vec, res);
 
         TIMER_STOP(0);
         times[run] = TIMER_ELAPSED(0)*1e-6;
@@ -161,20 +173,21 @@ int main(int argc, char ** argv) {
     }
 
     double avg_time = total_time / NUM_RUNS;
-    // Calculate bandwidth and computation metrics
-    size_t bytes_read = (size_t)n_val * (sizeof(double) + sizeof(int)) +    // values and col indices
-                        (size_t)(n + 1) * sizeof(int) +                     // row pointers
-                        (size_t)n_val * sizeof(double);                     // vector reads (worst case, one vec element per nnz)
     
-    size_t bytes_written = (size_t)n * sizeof(double);                      // result vector
+    // Calculate bandwidth and computation metrics
+    size_t bytes_read = (size_t)nnz * (sizeof(dtype) + sizeof(int)) +    // values and col indices
+                        (size_t)(n + 1) * sizeof(int) +                  // row pointers
+                        (size_t)nnz * sizeof(dtype);                     // vector reads (worst case, one vec element per nnz)
+    
+    size_t bytes_written = (size_t)n * sizeof(dtype);                    // result vector
     size_t total_bytes = bytes_read + bytes_written;
 
     double bandwidth = total_bytes / (avg_time * 1.0e9);  // GB/s
-    double flops = 2.0 * n_val;  // Each non-zero element requires a multiply and add
+    double flops = 2.0 * nnz;  // Each non-zero element requires a multiply and add
     double gflops = flops / (avg_time * 1.0e9);  // GFLOPS
 
     printf("\nSpMV Performance CSR (Single-Threaded):\n");
-    printf("Matrix size: %d x %d with %d non-zero elements\n", n, m, n_val);
+    printf("Matrix size: %d x %d with %d non-zero elements\n", n, m, nnz);
     printf("Average execution time: %.6f seconds\n", avg_time);
     printf("Memory bandwidth: %.2f GB/s\n", bandwidth);
     printf("Computational performance: %.2f GFLOPS\n", gflops);
@@ -189,10 +202,10 @@ int main(int argc, char ** argv) {
     }
     printf("\n");
 
-
-    free(csr_values);
-    free(csr_col_indices);
-    free(csr_row_ptr);
+    // Cleanup
+    free(csr_data.values);
+    free(csr_data.col_indices);
+    free(csr_data.row_pointers);
     free(res);
     free(vec);
     return 0;
