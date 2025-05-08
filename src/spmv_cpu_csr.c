@@ -5,7 +5,6 @@
 #include <wchar.h>
 #include <time.h>
 #include <sys/time.h>
-#include <omp.h>
 
 #include "../include/my_time_lib.h"
 #include "../include/read_file_lib.h"
@@ -32,7 +31,7 @@ int coo_to_csr(int n_rows, int nnz,
     }
 
     // Copy values and column indicies to their correct positions
-    int * temp_row_counts = calloc(n_rows,sizeof(int));
+    int * temp_row_counts = (int *)calloc(n_rows,sizeof(int));
     if (!temp_row_counts) return -1;
 
     for (int i = 0; i < nnz; i++) {
@@ -47,7 +46,6 @@ int coo_to_csr(int n_rows, int nnz,
     free(temp_row_counts);
 
     // Sort column indices and values within each row (if needed)
-    // This step uses insertion sort for each row - good for small row lengths
     for (int i = 0; i < n_rows; i++) {
         int row_start = csr_row_ptr[i];
         int row_end = csr_row_ptr[i + 1];
@@ -71,20 +69,15 @@ int coo_to_csr(int n_rows, int nnz,
     return 0;
 }
 
-// Matrix-vector product function (SpMV)
+// Matrix-vector product function (SpMV) - Single-threaded
 void spmv(const double *csr_values, const int *csr_row_ptr, const int *csr_col_indices,
           const double *vec, double *res, int n) {
-    // Clear result vector
-    // memset(res, 0, n * sizeof(double));
-
     // Perform SpMV
-    #pragma omp parallel for
     for (int i = 0; i < n; i++) {
         double sum = 0.0;
         const int start = csr_row_ptr[i];
         const int end = csr_row_ptr[i+1];
 
-        #pragma omp simd reduction(+:sum)
         for (int j = start; j < end; j++) {
             sum += csr_values[j] * vec[csr_col_indices[j]];
         }
@@ -106,19 +99,36 @@ int main(int argc, char ** argv) {
     _read_from_file_and_init(argv[1], &a_val, &a_row, &a_col, &n, &m, &n_val);
 
 
-    double * vec = aligned_alloc(64, m * sizeof(double));
-    #pragma omp parallel for simd
+    double * vec = (double*)malloc(m * sizeof(double));
+    if (!vec) { perror("Failed to allocate vec"); return -1; }
     for (int i = 0; i < m; i++) {
         vec[i] = 1.0;
     }
 
     double * res = (double*)malloc(n*sizeof(double));
+    if (!res) { perror("Failed to allocate res"); free(vec); return -1; }
+    // Initialize res to zero before spmv if not done inside
+    memset(res, 0, n * sizeof(double));
 
-    double * csr_values = aligned_alloc(64, n_val * sizeof(double));
-    int * csr_col_indices = aligned_alloc(64, n_val * sizeof(int));
+
+    double * csr_values = (double*)malloc(n_val * sizeof(double));
+    if (!csr_values) { perror("Failed to allocate csr_values"); free(vec); free(res); return -1; }
+
+    int * csr_col_indices = (int*)malloc(n_val * sizeof(int));
+    if (!csr_col_indices) { perror("Failed to allocate csr_col_indices"); free(vec); free(res); free(csr_values); return -1; }
+
     int * csr_row_ptr = (int*)calloc(n + 1,sizeof(int));
+    if (!csr_row_ptr) { perror("Failed to allocate csr_row_ptr"); free(vec); free(res); free(csr_values); free(csr_col_indices); return -1; }
 
-    coo_to_csr(n,n_val,a_row,a_col,a_val,csr_values,csr_col_indices,csr_row_ptr);
+
+    if (coo_to_csr(n,n_val,a_row,a_col,a_val,csr_values,csr_col_indices,csr_row_ptr) != 0) {
+        fprintf(stderr, "Error during COO to CSR conversion.\n");
+        // Free all allocated memory before exiting
+        free(a_row); free(a_col); free(a_val);
+        free(vec); free(res);
+        free(csr_values); free(csr_col_indices); free(csr_row_ptr);
+        return -1;
+    }
 
     free(a_row);
     free(a_col);
@@ -135,6 +145,8 @@ int main(int argc, char ** argv) {
 
     // Timed runs
     for (int run = 0; run < NUM_RUNS; run++) {
+        memset(res, 0, n * sizeof(double)); 
+
         TIMER_DEF(0);
         TIMER_START(0);
 
@@ -142,7 +154,6 @@ int main(int argc, char ** argv) {
 
         TIMER_STOP(0);
         times[run] = TIMER_ELAPSED(0)*1e-6;
-        // total_time += times[run];
     }
 
     for (int i = 0; i < NUM_RUNS; i++) {
@@ -151,18 +162,18 @@ int main(int argc, char ** argv) {
 
     double avg_time = total_time / NUM_RUNS;
     // Calculate bandwidth and computation metrics
-    size_t bytes_read = n_val * (sizeof(double) + sizeof(int)) +    // values and col indices
-                        (n + 1) * sizeof(int) +                     // row pointers
-                        n_val * sizeof(double);                     // vector reads (worst case)
+    size_t bytes_read = (size_t)n_val * (sizeof(double) + sizeof(int)) +    // values and col indices
+                        (size_t)(n + 1) * sizeof(int) +                     // row pointers
+                        (size_t)n_val * sizeof(double);                     // vector reads (worst case, one vec element per nnz)
     
-    size_t bytes_written = n * sizeof(double);                      // result vector
+    size_t bytes_written = (size_t)n * sizeof(double);                      // result vector
     size_t total_bytes = bytes_read + bytes_written;
 
     double bandwidth = total_bytes / (avg_time * 1.0e9);  // GB/s
     double flops = 2.0 * n_val;  // Each non-zero element requires a multiply and add
     double gflops = flops / (avg_time * 1.0e9);  // GFLOPS
 
-    printf("\nSpMV Performance CSR:\n");
+    printf("\nSpMV Performance CSR (Single-Threaded):\n");
     printf("Matrix size: %d x %d with %d non-zero elements\n", n, m, n_val);
     printf("Average execution time: %.6f seconds\n", avg_time);
     printf("Memory bandwidth: %.2f GB/s\n", bandwidth);
@@ -171,7 +182,7 @@ int main(int argc, char ** argv) {
     // First few elements of result vector
     printf("\nFirst non zero element of result vector (or fewer if n < 10):\n");
     for (int i = 0; i < n; i++) {
-        if (res[i] == 0.0)
+        if (res[i] == 0.0) // Using a small epsilon might be better for float comparison
             continue;
         printf("%f ", res[i]);
         break;
