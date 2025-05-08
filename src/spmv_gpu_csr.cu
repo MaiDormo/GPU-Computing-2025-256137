@@ -97,13 +97,6 @@ int coo_to_csr(const struct COO *coo_data, struct CSR *csr_data) {
 }
 
 void print_matrix_stats(struct CSR *csr_data) {
-    //number of rows
-    //number of cols
-    //number of nnz
-   
-    //nnz per row
-    //percentage of non zero compared to all values
-
     double avg_nnz_per_row = csr_data->num_non_zeros / csr_data->num_rows;
     double percentage_nnz = csr_data->num_non_zeros / (csr_data->num_cols * csr_data->num_rows); 
 
