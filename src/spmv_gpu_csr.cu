@@ -21,8 +21,6 @@ __global__ void vector_csr(const dtype *csr_values, const int *csr_row_ptr, cons
                                 const dtype *vec, dtype *res, int n);
 
 
-
-
 // --- COO to CSR Conversion ---
 int coo_to_csr(const struct COO *coo_data, struct CSR *csr_data) {
     int n_rows = coo_data->num_rows;
@@ -151,7 +149,7 @@ __global__ void vector_csr(const dtype *csr_values, const int *csr_row_ptr, cons
         }
 
         #pragma unroll
-        for (int delta = WARP_SIZE / 2; delta > 0; delta >>= 1) {
+        for (int delta = WARP_SIZE >> 1; delta > 0; delta >>= 1) {
             thread_sum += __shfl_down_sync(0xFFFFFFFF, thread_sum, delta);
         }
 
@@ -160,9 +158,6 @@ __global__ void vector_csr(const dtype *csr_values, const int *csr_row_ptr, cons
         }
     }
 }
-
-
-
 
 
 
@@ -190,16 +185,18 @@ __global__ void vector_csr_unrolled(const dtype *csr_values, const int *csr_row_
         }
 
         vals[tid] = thread_sum;
-        __syncthreads();
-
+        __syncwarp(); // Synchronize only within the warp before reduction
 
         // Reduce partial sums loop unrolled
+        // No synchronization needed between these steps within a warp
         if (lane_id < 16) vals[tid] += vals[tid + 16];
         if (lane_id < 8) vals[tid] += vals[tid + 8];
         if (lane_id < 4) vals[tid] += vals[tid + 4];
         if (lane_id < 2) vals[tid] += vals[tid + 2];
         if (lane_id < 1) vals[tid] += vals[tid + 1];
-        __syncthreads();
+        
+        // Only need this final syncwarp to ensure reduction is complete before writing result
+        __syncwarp();
 
         if (lane_id == 0) {
             res[actual_row] = vals[tid];
@@ -273,6 +270,29 @@ __global__ void adaptive_csr(const dtype *csr_values, const int *csr_row_ptr,
             if (tid == 0)
                 res[row_idx] = thread_sum;
         }
+    }
+}
+
+__global__ void spmv_simple(const dtype *csr_values, const int *csr_row_ptr, 
+                          const int *csr_col_indices, const dtype *vec, 
+                          dtype *res, int num_rows) {
+    // Each thread processes one row
+    int row = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    if (row < num_rows) {
+        // Get the range of this row's elements
+        int row_start = csr_row_ptr[row];
+        int row_end = csr_row_ptr[row + 1];
+        
+        // Process each non-zero element in the row
+        dtype sum = 0.0;
+        for (int j = row_start; j < row_end; j++) {
+            int col = csr_col_indices[j];
+            sum += csr_values[j] * vec[col];
+        }
+        
+        // Write the result
+        res[row] = sum;
     }
 }
 
@@ -436,23 +456,20 @@ int main(int argc, char ** argv) {
     cudaEventCreate(&end);
 
     // --- Warmup Run ---
-    // vector_csr_unrolled<<<block_num, thread_per_block, dynamic_shared_mem>>>(
-        // d_csr.values, d_csr.row_pointers, d_csr.col_indices, d_vec, d_res, n);
-    vector_csr<<<block_num, BLOCK_SIZE, shared_mem>>>(d_csr.values, d_csr.row_pointers, d_csr.col_indices, d_vec, d_res, n);
+    vector_csr_unrolled<<<block_num, BLOCK_SIZE, shared_mem>>>(d_csr.values, d_csr.row_pointers, d_csr.col_indices, d_vec, d_res, n);
+    // vector_csr<<<block_num, BLOCK_SIZE, shared_mem>>>(d_csr.values, d_csr.row_pointers, d_csr.col_indices, d_vec, d_res, n);
 
     // adaptive_csr<<<block_num, BLOCK_SIZE, shared_mem>>>(d_csr.values, d_csr.row_pointers, d_csr.col_indices, d_vec, d_res, d_block_rows, n);
     
     cudaDeviceSynchronize();
-
     // --- Timed Runs ---
     for (int run = 0; run < NUM_RUNS; run++) {
         cudaEventRecord(start);
 
-        // vector_csr_unrolled<<<block_num, thread_per_block, dynamic_shared_mem>>>(
-            // d_csr.values, d_csr.row_pointers, d_csr.col_indices, d_vec, d_res, n);
+        vector_csr_unrolled<<<block_num, BLOCK_SIZE, shared_mem>>>(d_csr.values, d_csr.row_pointers, d_csr.col_indices, d_vec, d_res, n);
         
-        vector_csr<<<block_num, BLOCK_SIZE, shared_mem>>>(
-            d_csr.values, d_csr.row_pointers, d_csr.col_indices, d_vec, d_res, n);
+        // vector_csr<<<block_num, BLOCK_SIZE, shared_mem>>>(d_csr.values, d_csr.row_pointers, d_csr.col_indices, d_vec, d_res, n);
+
 
         // adaptive_csr<<<block_num, BLOCK_SIZE, shared_mem>>>(
         //     d_csr.values, d_csr.row_pointers, d_csr.col_indices, d_vec, d_res, d_block_rows, n
