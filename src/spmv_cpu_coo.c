@@ -5,7 +5,6 @@
 #include <wchar.h>
 #include <time.h>
 #include <sys/time.h>
-#include <omp.h>
 
 #include "../include/my_time_lib.h"
 #include "../include/read_file_lib.h"
@@ -39,7 +38,6 @@ int main(int argc, char ** argv) {
 
 
     double * vec = (double*)malloc(m*sizeof(double));
-    #pragma omp for simd
     for (int i = 0; i < n; i++) {
         vec[i] = 1.0;
     }

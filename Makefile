@@ -39,7 +39,7 @@ $(BIN_FOLDER)/%: $(SRC_FOLDER)/%.c $(LIB_OBJECTS)
 # Rule for creating object files
 $(OBJ_FOLDER)/%.o: $(LIB_FOLDER)/%.c
 	@mkdir -p $(OBJ_FOLDER)
-	$(CC) -c $< -o $@ $(OPT)
+	$(CC) -c $< -o $@ $(OPT) -fopenmp
 
 # Rule for compiling cuda
 $(BIN_FOLDER)/%.exec: $(SRC_FOLDER)/%.cu $(LIB_OBJECTS)
