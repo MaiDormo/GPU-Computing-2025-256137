@@ -1,12 +1,102 @@
 #include "../include/spmv_kernels.h"
 
+__global__ void spmv_simple(const dtype *csr_values, const int *csr_row_ptr, 
+                          const int *csr_col_indices, const dtype *vec, 
+                          dtype *res, int num_rows) {
+    // Each thread processes one row
+    int row = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    if (row < num_rows) {
+        // Get the range of this row's elements
+        int row_start = csr_row_ptr[row];
+        int row_end = csr_row_ptr[row + 1];
+        
+        // Process each non-zero element in the row
+        dtype sum = 0.0;
+        for (int j = row_start; j < row_end; j++) {
+            int col = csr_col_indices[j];
+            sum += csr_values[j] * vec[col];
+        }
+        
+        // Write the result
+        res[row] = sum;
+    }
+}
+
+__global__ void value_parallel_sequential_spmv(const dtype *csr_values, const int *csr_row_ptr, 
+                              const int *csr_col_indices, const dtype *vec, 
+                              dtype *res, int nnz, int num_rows) {
+    // Each thread processes one non-zero value
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (idx < nnz) {
+        // Find which row this element belongs to (binary search)
+        int row = 0;
+        int left = 0;
+        int right = num_rows - 1;
+        
+        while (left <= right) {
+            int mid = (left + right) >> 1;
+            if (csr_row_ptr[mid] <= idx) {
+                row = mid;
+                left = mid + 1;
+            } else {
+                right = mid - 1;
+            }
+        }
+        
+        // Get column and compute contribution
+        int col = csr_col_indices[idx];
+        dtype val = csr_values[idx] * vec[col];
+        
+        // Add contribution to result vector using atomic operation
+        atomicAdd(&res[row], val);
+    }
+}
+
+__global__ void value_parallel_blocked_spmv(const dtype *csr_values, const int *csr_row_ptr, 
+    const int *csr_col_indices, const dtype *vec,
+    dtype *res, int nnz, int num_rows, int stride) {
+    
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    // Calculate stride as total number of threads (distance between memory addresses accessed by sequential threads)
+    
+    int start_idx = tid * stride;
+    
+    // Simple strided access: each thread starts at its ID and jumps by stride
+    for (int i = 0; i < stride; i++) {
+        int idx = start_idx + i;
+        if (idx >= nnz) break;
+        // Find which row this element belongs to (binary search)
+        int row = 0;
+        int left = 0;
+        int right = num_rows - 1;
+
+        while (left <= right) {
+            int mid = (left + right) >> 1;
+            if (csr_row_ptr[mid] <= idx) {
+                row = mid;
+                left = mid + 1;
+            } else {
+                right = mid - 1;
+            }
+        }
+        
+        int col = csr_col_indices[idx];
+        dtype val = csr_values[idx] * vec[col];
+        atomicAdd(&res[row], val);
+    }
+}
+
+//------------------- NOT PART OF THE FIRST DELIVERABLE --------------------------------
+
 __global__ void vector_csr(const dtype *csr_values, const int *csr_row_ptr, const int *csr_col_indices,
-                          const dtype *vec, dtype *res, int n, int warp_size, int block_size) { 
-    const int tid = threadIdx.x;
-    const int warps_per_block = block_size / warp_size;
+    const dtype *vec, dtype *res, int n) { 
+        const int tid = threadIdx.x;
+        const int warps_per_block = BLOCK_SIZE / WARP_SIZE;
     const int block_start_row = blockIdx.x * warps_per_block;
-    const int warp_id = tid / warp_size;
-    const int lane_id = tid % warp_size;
+    const int warp_id = tid / WARP_SIZE;
+    const int lane_id = tid % WARP_SIZE;
     const int actual_row = block_start_row + warp_id;
 
     if (actual_row < n) {
@@ -14,14 +104,13 @@ __global__ void vector_csr(const dtype *csr_values, const int *csr_row_ptr, cons
         int row_start = csr_row_ptr[actual_row];
         int row_end = csr_row_ptr[actual_row + 1];
 
-        // Improved vector access using texture memory
-        for (int j = row_start + lane_id; j < row_end; j += warp_size) {
+        for (int j = row_start + lane_id; j < row_end; j += WARP_SIZE) {
             int col = csr_col_indices[j];
-            thread_sum += csr_values[j] * __ldg(&vec[col]);
+            thread_sum += csr_values[j] * vec[col];
         }
 
         #pragma unroll
-        for (int delta = warp_size >> 1; delta > 0; delta >>= 1) {
+        for (int delta = WARP_SIZE >> 1; delta > 0; delta >>= 1) {
             thread_sum += __shfl_down_sync(0xFFFFFFFF, thread_sum, delta);
         }
 
@@ -140,56 +229,4 @@ __global__ void adaptive_csr(const dtype *csr_values, const int *csr_row_ptr,
     }
 }
 
-__global__ void spmv_simple(const dtype *csr_values, const int *csr_row_ptr, 
-                          const int *csr_col_indices, const dtype *vec, 
-                          dtype *res, int num_rows) {
-    // Each thread processes one row
-    int row = blockIdx.x * blockDim.x + threadIdx.x;
-    
-    if (row < num_rows) {
-        // Get the range of this row's elements
-        int row_start = csr_row_ptr[row];
-        int row_end = csr_row_ptr[row + 1];
-        
-        // Process each non-zero element in the row
-        dtype sum = 0.0;
-        for (int j = row_start; j < row_end; j++) {
-            int col = csr_col_indices[j];
-            sum += csr_values[j] * vec[col];
-        }
-        
-        // Write the result
-        res[row] = sum;
-    }
-}
 
-__global__ void value_parallel_spmv(const dtype *csr_values, const int *csr_row_ptr, 
-                                  const int *csr_col_indices, const dtype *vec, 
-                                  dtype *res, int nnz, int num_rows) {
-    // Each thread processes one non-zero value
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    
-    if (idx < nnz) {
-        // Find which row this element belongs to (binary search)
-        int row = 0;
-        int left = 0;
-        int right = num_rows;
-        
-        while (left <= right) {
-            int mid = (left + right) / 2;
-            if (csr_row_ptr[mid] <= idx) {
-                row = mid;
-                left = mid + 1;
-            } else {
-                right = mid - 1;
-            }
-        }
-        
-        // Get column and compute contribution
-        int col = csr_col_indices[idx];
-        dtype val = csr_values[idx] * vec[col];
-        
-        // Add contribution to result vector using atomic operation
-        atomicAdd(&res[row], val);
-    }
-}

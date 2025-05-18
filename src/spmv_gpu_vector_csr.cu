@@ -96,10 +96,10 @@ int main(int argc, char ** argv) {
     cudaMemcpy(d_csr.row_pointers, h_csr.row_pointers, (n + 1) * sizeof(int), cudaMemcpyHostToDevice);
     cudaMemcpy(d_block_rows, h_block_rows, countRowBlocks * sizeof(int), cudaMemcpyHostToDevice);
 
-    // --- Kernel Launch Configuration ---
-    const int warps_per_block = BLOCK_SIZE / WARP_SIZE;
-    const int block_num = (n + warps_per_block - 1) / warps_per_block;
-    const size_t shared_mem = BLOCK_SIZE * sizeof(dtype);
+    // --- Kernel Launch Configuration --- 
+    const int warps_per_block = BLOCK_SIZE/ WARP_SIZE;
+    const int rows_per_block = warps_per_block;
+    const int block_num = (n + rows_per_block - 1) / rows_per_block;
 
     print_matrix_stats(&h_csr);
 
@@ -112,7 +112,7 @@ int main(int argc, char ** argv) {
     cudaEventCreate(&end);
 
     // --- Warmup Run ---
-    vector_csr_unrolled<<<block_num, BLOCK_SIZE, shared_mem>>>(
+    vector_csr<<<block_num, BLOCK_SIZE>>>(
         d_csr.values, d_csr.row_pointers, d_csr.col_indices, d_vec, d_res, n
     );
     
@@ -122,7 +122,7 @@ int main(int argc, char ** argv) {
     for (int run = 0; run < NUM_RUNS; run++) {
         cudaEventRecord(start);
 
-        vector_csr_unrolled<<<block_num, BLOCK_SIZE, shared_mem>>>(
+        vector_csr<<<block_num, BLOCK_SIZE>>>(
             d_csr.values, d_csr.row_pointers, d_csr.col_indices, d_vec, d_res, n
         );
             
@@ -146,10 +146,27 @@ int main(int argc, char ** argv) {
     }
     dtype avg_time = total_time / NUM_RUNS;
 
-    size_t bytes_read = (size_t)nnz * (sizeof(dtype) + sizeof(int)) + // values and col indices
-                        (size_t)(n + 1) * sizeof(int) +               // row pointers
-                        (size_t)m * sizeof(dtype) +                   // vector reads (worst case estimate)
-                        (size_t)countRowBlocks * sizeof(int);
+    // Calculate effective memory access more accurately
+    size_t bytes_read_vals_cols = (size_t)nnz * (sizeof(dtype) + sizeof(int)); // values and col indices
+    size_t bytes_read_row_ptr = (size_t)(n + 1) * sizeof(int);                // row pointers
+
+    // Count unique column indices
+    int* unique_cols = (int*)calloc(m, sizeof(int));
+    size_t unique_count = 0;
+    for (int i = 0; i < nnz; i++) {
+        if (unique_cols[h_csr.col_indices[i]] == 0) {
+            unique_cols[h_csr.col_indices[i]] = 1;
+            unique_count++;
+        }
+    }
+    free(unique_cols);
+
+    // Use the actual count of unique elements
+    size_t bytes_read_vec = unique_count * sizeof(dtype);
+
+    size_t bytes_read = bytes_read_vals_cols + // values and col indices
+                        bytes_read_row_ptr +               // row pointers
+                        bytes_read_vec;                   // vector reads (worst case estimate)
     size_t bytes_written = (size_t)n * sizeof(dtype);                 // result vector
     size_t total_bytes = bytes_read + bytes_written;
 
@@ -158,22 +175,18 @@ int main(int argc, char ** argv) {
     double gflops = flops / (avg_time * 1.0e9);  // GFLOPS
 
     // --- Print Results ---
-    printf("\nSpMV Performance CSR:\n");
-    printf("Matrix size: %d x %d with %d non-zero elements\n", n, m, nnz);
-    printf("Average execution time: %.3f ms\n", avg_time * 1.0e3);
-    printf("Memory bandwidth (estimated): %.2f GB/s\n", bandwidth);
-    printf("Computational performance: %.2f GFLOPS\n", gflops);
-
-    printf("\nFirst few non-zero elements of result vector:\n");
-    int count = 0;
-    for (int i = 0; i < n && count < 10; i++) {
-        if (h_res[i] != 0.0) {
-            printf("%f ", h_res[i]);
-            count++;
-        }
-    }
-    if (count == 0) printf("Result vector is all zeros or first 10 elements are zero.");
-    printf("\n");
+    print_spmv_performance(
+        "CSR", 
+        argv[1],
+        n, 
+        m, 
+        nnz, 
+        avg_time, 
+        bandwidth, 
+        gflops, 
+        h_res,
+        10  // Print up to 10 samples
+    );
 
     // --- Cleanup ---
     cudaFree(d_vec);

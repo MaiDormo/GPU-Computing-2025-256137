@@ -1,12 +1,15 @@
 #include <stdio.h>
 #include <math.h>
 #include <stdlib.h>
+#include <string.h>
 #include <omp.h>
 #include "../include/spmv_utils.h"
 
 void print_matrix_stats(struct CSR *csr_data) {
     double avg_nnz_per_row = (double)csr_data->num_non_zeros / csr_data->num_rows;
-    double percentage_nnz = (double)csr_data->num_non_zeros / (csr_data->num_cols * csr_data->num_rows); 
+    //account for possible overflow
+    double total_elements = (double)csr_data->num_cols * (double)csr_data->num_rows;
+    double percentage_nnz = (double)csr_data->num_non_zeros / total_elements; 
 
     int min_nnz = csr_data->num_non_zeros;
     int max_nnz = 0;
@@ -71,4 +74,64 @@ int adaptive_row_selection(const int *csr_row_ptr, int rows, int *row_blocks, in
     }
 
     return block_idx;
+}
+
+
+void print_spmv_performance(
+    const char* implementation_name,
+    const char* matrix_path,
+    int n, 
+    int m, 
+    int nnz, 
+    double avg_time, 
+    double bandwidth, 
+    double gflops, 
+    const dtype* result_vector,
+    int max_samples
+) {
+    // Extract just the matrix name from the path
+    const char* matrix_name = strrchr(matrix_path, '/');
+    if (matrix_name) {
+        matrix_name++; // Skip the '/'
+    } else {
+        matrix_name = matrix_path; // Use the full path if no '/' found
+    }
+    
+    // Basic matrix stats
+    printf("Number of Columns: %d\n", m);
+    printf("Number of Rows: %d\n", n);
+    printf("Number of NNZ: %d\n", nnz);
+    
+    // Additional statistics if we have a CSR struct
+    double avg_nnz_per_row = (double)nnz / n;
+    printf("Average NNZ per Row: %f\n", avg_nnz_per_row);
+    
+    // Percentage of non-zeros (careful with large matrices to avoid overflow)
+    double total_elements = (double)n * (double)m;
+    double percentage_nnz = ((double)nnz / total_elements) * 100.0;
+    printf("Percentage of NNZ: %f%%\n", percentage_nnz);
+    
+    // Performance metrics
+    printf("\nSpMV Performance %s:\n", implementation_name);
+    printf("Matrix size: %d x %d with %d non-zero elements\n", n, m, nnz);
+
+    printf("Average execution time: %.6f seconds\n", avg_time);
+    
+    printf("Memory bandwidth (estimated): %.4f GB/s\n", bandwidth);
+    printf("Computational performance: %.6f GFLOPS\n", gflops);
+    
+    // Print sample of result vector
+    printf("\nFirst few non-zero elements of result vector:\n");
+    int count = 0;
+    for (int i = 0; i < n && count < max_samples; i++) {
+        if (result_vector[i] != 0.0) {
+            printf("%f ", result_vector[i]);
+            count++;
+        }
+    }
+    
+    if (count == 0) {
+        printf("Result vector is all zeros or first %d elements are zero.", max_samples);
+    }
+    printf("\n");
 }

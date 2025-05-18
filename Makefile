@@ -3,15 +3,14 @@ CC := gcc
 NVCC := nvcc
 
 # create a makefile variable named OPT with your favorite C flags (at least with -std=c99 -O3)
-OPT := -g -std=c11 -O3 -Wall -Wextra -lm -march=native -funroll-loops
-NV_OPT := -O3 --gpu-architecture=sm_80 -m64
+OPT := -std=c11 -O2 -Wall -Wextra -lm #-march=native -funroll-loops
+NV_OPT := -O2 --gpu-architecture=sm_80 -m64 -Xcompiler -fopenmp
 
 BIN_FOLDER := bin
 OBJ_FOLDER := obj
 SRC_FOLDER := src
 LIB_FOLDER := lib
 INCLUDE_FOLDER := include
-BATCH_OUT_FOLDER := outputs
 
 # Find all .c files in the lib directory
 LIB_SOURCES := $(wildcard $(LIB_FOLDER)/*.c)
@@ -44,16 +43,13 @@ $(OBJ_FOLDER)/%.o: $(LIB_FOLDER)/%.c
 # Rule for compiling cuda
 $(BIN_FOLDER)/%.exec: $(SRC_FOLDER)/%.cu $(LIB_OBJECTS)
 	@mkdir -p $(BIN_FOLDER)
-	@bash -c "source /etc/profile.d/modules.sh && module load CUDA/12.3.2 && $(NVCC) $< $(LIB_OBJECTS) -o $@ $(NV_OPT)"
+	@bash -c "source /etc/profile.d/modules.sh && module load CUDA/12.3.2 && $(NVCC) $< $(LIB_FOLDER)/spmv_kernels.cu $(LIB_OBJECTS) -o $@ $(NV_OPT)"
 
 # Create necessary directories
 directories:
-	@mkdir -p $(BIN_FOLDER) $(OBJ_FOLDER) $(BATCH_OUT_FOLDER)
+	@mkdir -p $(BIN_FOLDER) $(OBJ_FOLDER)
 
 # Clean target
 clean:
 	rm -rf $(BIN_FOLDER)
 	rm -rf $(OBJ_FOLDER)
-
-clean_batch_outputs:
-	rm -f $(BATCH_OUT_FOLDER)/*

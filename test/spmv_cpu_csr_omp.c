@@ -5,6 +5,7 @@
 #include <wchar.h>
 #include <time.h>
 #include <sys/time.h>
+#include <omp.h>
 
 #include "../include/my_time_lib.h"
 #include "../include/read_file_lib.h"
@@ -20,6 +21,7 @@ void spmv(const struct CSR *csr_data, const dtype *vec, dtype *res) {
     const int *csr_col_indices = csr_data->col_indices;
     
     // Perform SpMV
+    #pragma omp parallel for
     for (int i = 0; i < n; i++) {
         dtype sum = 0.0;
         const int start = csr_row_ptr[i];
@@ -29,7 +31,7 @@ void spmv(const struct CSR *csr_data, const dtype *vec, dtype *res) {
             sum += csr_values[j] * vec[csr_col_indices[j]];
         }
         res[i] = sum;
-    } 
+    }  
 }
 
 int main(int argc, char ** argv) {

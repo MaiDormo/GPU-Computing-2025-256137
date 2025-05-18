@@ -24,8 +24,17 @@ void spmv(const struct CSR *csr_data, const dtype *vec, dtype *res) {
         dtype sum = 0.0;
         const int start = csr_row_ptr[i];
         const int end = csr_row_ptr[i+1];
+        int j = start;
 
-        for (int j = start; j < end; j++) {
+        for (; j + 3 < end; j += 4) {
+            sum += csr_values[j] * vec[csr_col_indices[j]];
+            sum += csr_values[j + 1] * vec[csr_col_indices[j + 1]];
+            sum += csr_values[j + 2] * vec[csr_col_indices[j + 2]];
+            sum += csr_values[j + 3] * vec[csr_col_indices[j + 3]];
+        }
+        
+        //treat final elements
+        for(; j < end; j++) {
             sum += csr_values[j] * vec[csr_col_indices[j]];
         }
         res[i] = sum;

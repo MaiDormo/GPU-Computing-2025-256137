@@ -49,7 +49,7 @@ int coo_to_csr(const struct COO *coo_data, struct CSR *csr_data) {
     }
     free(temp_row_counts);
 
-    // Sort within rows
+    // Sort columns within rows
     #pragma omp parallel for
     for (int i = 0; i < n_rows; i++) {
         int row_start = csr_row_ptr[i];
