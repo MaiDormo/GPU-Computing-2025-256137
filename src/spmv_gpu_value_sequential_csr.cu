@@ -94,8 +94,6 @@ int main(int argc, char ** argv) {
     // const int total_threads_needed = (nnz + elements_per_thread - 1) / elements_per_thread;
     // const int block_num = (total_threads_needed + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
-    print_matrix_stats(&h_csr);
-
     // --- Timing Setup ---
     const int NUM_RUNS = 50;
     dtype total_time = 0.0;

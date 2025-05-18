@@ -98,6 +98,11 @@ In order to run the experiment with different kernels you need to use a differen
 ```bash
 sbatch run_spmv_experimenting_block_thread_sizes.sh
 ```
+After the script is runned we need to extract the relvant data in a csv file. This is done by calling the script
+
+```bash
+./convert_spmv_output_to_csv.sh experiment_spmv_benchmark-[number].out > file.csv
+```
 
 ## Performance Metrics
 
@@ -108,7 +113,8 @@ The benchmarks measure:
 
 ## Hardware Used
 
-- **CPU**: intel something, AMD EPYC (something)
-- **GPU**: NVIDIA RTX A30, NVIDIA RTX L40S
+- **CPU**: AMD EPYC 9334 @ 2.7GHz, 32/64 cores/threads
+- **GPU**: NVIDIA RTX A30
 - Cuda Toolkit 12.3.2 or later
+- GCC 11.5 
 

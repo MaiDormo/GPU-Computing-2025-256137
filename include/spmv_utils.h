@@ -9,13 +9,6 @@ extern "C" {
 #endif
 
 /**
- * Print statistics about a CSR matrix
- * 
- * @param csr_data The CSR matrix data
- */
-void print_matrix_stats(struct CSR *csr_data);
-
-/**
  * Determine block distribution for adaptive CSR SpMV
  *
  * @param csr_row_ptr Row pointers array from CSR matrix

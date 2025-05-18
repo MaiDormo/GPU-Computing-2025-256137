@@ -89,8 +89,6 @@ int main(int argc, char ** argv) {
     // --- Kernel Launch Configuration ---
     const int block_num = (n + BLOCK_SIZE - 1) / BLOCK_SIZE;
     // const size_t shared_mem = BLOCK_SIZE * sizeof(dtype);
-    
-    print_matrix_stats(&h_csr);
 
     // --- Timing Setup ---
     const int NUM_RUNS = 50;

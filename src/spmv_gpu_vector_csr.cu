@@ -101,8 +101,6 @@ int main(int argc, char ** argv) {
     const int rows_per_block = warps_per_block;
     const int block_num = (n + rows_per_block - 1) / rows_per_block;
 
-    print_matrix_stats(&h_csr);
-
     // --- Timing Setup ---
     const int NUM_RUNS = 50;
     dtype total_time = 0.0;
