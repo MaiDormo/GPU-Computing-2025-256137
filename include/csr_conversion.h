@@ -16,6 +16,10 @@ extern "C" {
  */
 int coo_to_csr(const struct COO *coo_data, struct CSR *csr_data);
 
+int coo_to_csr_padding(const struct COO *coo_data, struct CSR *csr_data);
+
+int coo_to_csr_reordered(const struct COO *coo_data, struct CSR *csr_data);
+
 #ifdef __cplusplus
 }
 #endif

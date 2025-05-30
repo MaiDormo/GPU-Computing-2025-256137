@@ -202,6 +202,7 @@ __global__ void adaptive_csr(const dtype *csr_values, const int *csr_row_ptr,
         int row_start = csr_row_ptr[block_row_start];
         int row_end = csr_row_ptr[block_row_end];
         dtype thread_sum = 0.0;
+        
         for (int i = row_start + tid; i < row_end; i += blockDim.x) {
             thread_sum += csr_values[i] * __ldg(&vec[csr_col_indices[i]]);
         }
@@ -228,5 +229,7 @@ __global__ void adaptive_csr(const dtype *csr_values, const int *csr_row_ptr,
         }
     }
 }
+
+
 
 

@@ -1,7 +1,7 @@
 #ifndef CSR_STRUCT_H
 #define CSR_STRUCT_H
 
-#define dtype double
+#define dtype float
 
 // --- Struct Definitions ---
 // Structure for CSR format

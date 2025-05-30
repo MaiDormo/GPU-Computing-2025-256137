@@ -38,7 +38,7 @@ int main(int argc, char ** argv) {
     h_csr.row_pointers = (int*)calloc(n + 1, sizeof(int)); // Zero initialization is important
     int *h_block_rows = (int*)calloc(n, sizeof(int));
 
-    if (!h_vec || !h_res || !h_csr.values || !h_csr.col_indices || !h_csr.row_pointers || !h_block_rows) {
+if (!h_vec || !h_res || !h_csr.values || !h_csr.col_indices || !h_csr.row_pointers || !h_block_rows) {
         perror("Failed to allocate host memory");
         // Free any successfully allocated memory before exiting
         free(h_coo.a_val); free(h_coo.a_row); free(h_coo.a_col);
@@ -68,8 +68,8 @@ int main(int argc, char ** argv) {
     free(h_coo.a_row); h_coo.a_row = NULL;
     free(h_coo.a_col); h_coo.a_col = NULL;
 
-    // int countRowBlocks = adaptive_row_selection(h_csr.row_pointers, n, h_block_rows, WARP_SIZE, BLOCK_SIZE);
-    // printf("Number of rowBlocks: %d\n", countRowBlocks);
+    int countRowBlocks = adaptive_row_selection(h_csr.row_pointers, n, h_block_rows, WARP_SIZE, BLOCK_SIZE);
+    printf("Number of rowBlocks: %d\n", countRowBlocks);
 
     // --- Device Data Structures ---
     struct CSR d_csr; // Holds device pointers
@@ -82,7 +82,7 @@ int main(int argc, char ** argv) {
     cudaMalloc(&d_csr.values, h_csr.num_non_zeros * sizeof(dtype));
     cudaMalloc(&d_csr.col_indices, h_csr.num_non_zeros * sizeof(int));
     cudaMalloc(&d_csr.row_pointers, (n + 1) * sizeof(int));
-    // cudaMalloc(&d_block_rows, countRowBlocks * sizeof(int));
+    cudaMalloc(&d_block_rows, countRowBlocks * sizeof(int));
     d_csr.num_rows = n;
     d_csr.num_cols = m;
     d_csr.num_non_zeros = h_csr.num_non_zeros;
@@ -93,12 +93,13 @@ int main(int argc, char ** argv) {
     cudaMemcpy(d_csr.values, h_csr.values, h_csr.num_non_zeros * sizeof(dtype), cudaMemcpyHostToDevice);
     cudaMemcpy(d_csr.col_indices, h_csr.col_indices, h_csr.num_non_zeros * sizeof(int), cudaMemcpyHostToDevice);
     cudaMemcpy(d_csr.row_pointers, h_csr.row_pointers, (n + 1) * sizeof(int), cudaMemcpyHostToDevice);
-    // cudaMemcpy(d_block_rows, h_block_rows, countRowBlocks * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_block_rows, h_block_rows, countRowBlocks * sizeof(int), cudaMemcpyHostToDevice);
 
     // --- Kernel Launch Configuration --- 
     const int warps_per_block = BLOCK_SIZE/ WARP_SIZE;
     const int rows_per_block = warps_per_block;
     const int block_num = (n + rows_per_block - 1) / rows_per_block;
+    const size_t shared_mem = BLOCK_SIZE * sizeof(dtype);
 
     // --- Timing Setup ---
     const int NUM_RUNS = 50;
@@ -109,8 +110,8 @@ int main(int argc, char ** argv) {
     cudaEventCreate(&end);
 
     // --- Warmup Run ---
-    vector_csr<<<block_num, BLOCK_SIZE>>>(
-        d_csr.values, d_csr.row_pointers, d_csr.col_indices, d_vec, d_res, n
+    adaptive_csr<<<block_num, BLOCK_SIZE, shared_mem>>>(
+        d_csr.values, d_csr.row_pointers, d_csr.col_indices, d_vec, d_res, d_block_rows, n
     );
     
     cudaDeviceSynchronize();
@@ -119,8 +120,8 @@ int main(int argc, char ** argv) {
     for (int run = 0; run < NUM_RUNS; run++) {
         cudaEventRecord(start);
 
-        vector_csr<<<block_num, BLOCK_SIZE>>>(
-            d_csr.values, d_csr.row_pointers, d_csr.col_indices, d_vec, d_res, n
+        adaptive_csr<<<block_num, BLOCK_SIZE, shared_mem>>>(
+            d_csr.values, d_csr.row_pointers, d_csr.col_indices, d_vec, d_res, d_block_rows, n
         );
             
         cudaEventRecord(end);

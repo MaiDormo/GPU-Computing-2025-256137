@@ -52,7 +52,7 @@ void read_from_file_and_init(char * file_path, struct COO *coo_data) {
     int r, c;
     dtype v;
     for (int i = 0; i < nnz; i++) {
-        if (fscanf(file, "%d %d %lf", &r, &c, &v) != 3){
+        if (fscanf(file, "%d %d %f", &r, &c, &v) != 3){
             fprintf(stderr, "Error reading entry %d\n", i);
             free(buffer); fclose(file);
             free(coo_data->a_val); free(coo_data->a_row); free(coo_data->a_col);
