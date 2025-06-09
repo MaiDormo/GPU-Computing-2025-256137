@@ -65,6 +65,45 @@ int main(int argc, char ** argv) {
     free(h_coo.a_row); h_coo.a_row = NULL;
     free(h_coo.a_col); h_coo.a_col = NULL;
 
+    // --- Calculate Optimal Launch Configuration ---
+    int optimal_block_size;
+    
+    // Analyze matrix characteristics to determine optimal block size
+    struct MAT_STATS stats = calculate_matrix_stats(&h_csr);
+    printf("Matrix analysis: mean_nnz_per_row = %.2f\n", stats.mean_nnz_per_row);
+    
+    
+    if (stats.mean_nnz_per_row < 16) {
+        optimal_block_size = 128;  // Very sparse matrices - smaller blocks
+    } else if (stats.mean_nnz_per_row < 32) {
+        optimal_block_size = 256;  // Sparse matrices
+    } else if (stats.mean_nnz_per_row < 64) {
+        optimal_block_size = 512;  // Medium density matrices
+    } else {
+        optimal_block_size = 1024; // Dense matrices - larger blocks for better occupancy
+    }
+
+    // Check device shared memory limits and adjust if necessary
+    int device;
+    cudaGetDevice(&device);
+    cudaDeviceProp prop;
+    cudaGetDeviceProperties(&prop, device);
+    
+    // Vector CSR doesn't use explicit shared memory, but ensure block size is reasonable
+    if (optimal_block_size > prop.maxThreadsPerBlock) {
+        printf("Warning: Optimal block size (%d) exceeds device limit (%d)\n", 
+               optimal_block_size, prop.maxThreadsPerBlock);
+        optimal_block_size = prop.maxThreadsPerBlock;
+    }
+
+    // Calculate grid size based on optimal block size
+    const int warps_per_block = optimal_block_size / WARP_SIZE;
+    const int rows_per_block = warps_per_block;  // One warp per row
+    const int optimal_block_num = (n + rows_per_block - 1) / rows_per_block;
+
+    printf("Optimal launch config: %d blocks, %d threads per block (warps per block: %d)\n",
+           optimal_block_num, optimal_block_size, warps_per_block);
+
     // --- Device Data Structures ---
     struct CSR d_csr; // Holds device pointers
     dtype *d_vec = NULL, *d_res = NULL;
@@ -86,11 +125,6 @@ int main(int argc, char ** argv) {
     cudaMemcpy(d_csr.col_indices, h_csr.col_indices, h_csr.num_non_zeros * sizeof(int), cudaMemcpyHostToDevice);
     cudaMemcpy(d_csr.row_pointers, h_csr.row_pointers, (n + 1) * sizeof(int), cudaMemcpyHostToDevice);
 
-    // --- Kernel Launch Configuration --- 
-    const int warps_per_block = BLOCK_SIZE/ WARP_SIZE;
-    const int rows_per_block = warps_per_block;
-    const int block_num = (n + rows_per_block - 1) / rows_per_block;
-
     // --- Timing Setup ---
     const int NUM_RUNS = 50;
     dtype total_time = 0.0;
@@ -100,7 +134,7 @@ int main(int argc, char ** argv) {
     cudaEventCreate(&end);
 
     // --- Warmup Run ---
-    vector_csr<<<block_num, BLOCK_SIZE>>>(
+    vector_csr<<<optimal_block_num, optimal_block_size>>>(
         d_csr.values, d_csr.row_pointers, d_csr.col_indices, d_vec, d_res, n
     );
     
@@ -110,7 +144,7 @@ int main(int argc, char ** argv) {
     for (int run = 0; run < NUM_RUNS; run++) {
         cudaEventRecord(start);
 
-        vector_csr<<<block_num, BLOCK_SIZE>>>(
+        vector_csr<<<optimal_block_num, optimal_block_size>>>(
             d_csr.values, d_csr.row_pointers, d_csr.col_indices, d_vec, d_res, n
         );
             
@@ -162,9 +196,12 @@ int main(int argc, char ** argv) {
     double flops = 2.0 * nnz;
     double gflops = flops / (avg_time * 1.0e9);  // GFLOPS
 
+    // --- Print Matrix Statistics ---
+    print_matrix_stats(&h_csr);
+
     // --- Print Results ---
     print_spmv_performance(
-        "CSR", 
+        "Vector CSR", 
         argv[1],
         n, 
         m, 
