@@ -55,6 +55,8 @@ void print_matrix_stats(
     const struct CSR *matrix
 );
 
+struct MAT_STATS calculate_matrix_stats(const struct CSR *csr_matrix);
+
 #ifdef __cplusplus
 }
 #endif

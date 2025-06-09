@@ -6,58 +6,78 @@
 #include "../include/spmv_utils.h"
 #include "../include/spmv_type.h"
 
-int adaptive_row_selection(const int *csr_row_ptr, int rows, int *row_blocks, int warp_size, int block_size) {
+int adaptive_row_selection(const int *csr_row_ptr, int rows, int *row_blocks, 
+                             int warp_size, int block_size) {
     const int MAX_ROWS_PER_BLOCK = block_size / warp_size;
-    const int MAX_NNZ_PER_WARP = warp_size * 4;
-    const int MAX_NNZ_PER_BLOCK = MAX_NNZ_PER_WARP * MAX_ROWS_PER_BLOCK;
-    const int VERY_DENSE_ROW = MAX_NNZ_PER_WARP * 4;
-
-    // Input validation
-    if (!csr_row_ptr || !row_blocks || rows <= 0 || warp_size <= 0 || block_size <= 0) {
-        return -1;
+    
+    // Dynamic thresholds based on matrix characteristics
+    int total_nnz = csr_row_ptr[rows];
+    double avg_nnz_per_row = (double)total_nnz / rows;
+    
+    // Adaptive thresholds
+    const int VERY_DENSE_ROW = warp_size * 8; // Threshold for dedicated blocks
+    const int MAX_NNZ_PER_BLOCK = warp_size * MAX_ROWS_PER_BLOCK * 2; // Load balance threshold
+    
+    // Pre-calculate row densities for better decisions
+    int *row_nnz = malloc(rows * sizeof(int));
+    if (!row_nnz) {
+        // Fallback: simple sequential blocking
+        for (int i = 0; i <= rows; i += MAX_ROWS_PER_BLOCK) {
+            row_blocks[i / MAX_ROWS_PER_BLOCK] = (i < rows) ? i : rows;
+        }
+        return (rows + MAX_ROWS_PER_BLOCK - 1) / MAX_ROWS_PER_BLOCK + 1;
     }
-
+    
+    for (int i = 0; i < rows; i++) {
+        row_nnz[i] = csr_row_ptr[i + 1] - csr_row_ptr[i];
+    }
+    
     row_blocks[0] = 0;
     int block_idx = 1;
-    int current_block_rows = 0;
-    int current_block_nnz = 0;
     
-    for (int row = 0; row < rows; row++) {
-        int row_nnz = csr_row_ptr[row + 1] - csr_row_ptr[row];
+    for (int row = 0; row < rows; ) {
+        int row_nnz_val = row_nnz[row];
 
-        // Case 1: Very dense row - put in its own block
-        if (row_nnz > VERY_DENSE_ROW) {
-            // If we've accumulated rows, finish the previous block
-            if (current_block_rows > 0) {
-                row_blocks[block_idx++] = row;
-                current_block_rows = 0;
-                current_block_nnz = 0;
-            }
-
-            // Create a dedicated block for this row
+        // Strategy 1: Very dense rows get dedicated blocks
+        if (row_nnz_val > VERY_DENSE_ROW) {
             row_blocks[block_idx++] = row + 1;
+            row++;
             continue;
         }
         
-        // Case 2: Adding this row would exceed block limits
-        if ((current_block_rows + 1) > MAX_ROWS_PER_BLOCK || 
-            (current_block_nnz + row_nnz > MAX_NNZ_PER_BLOCK)) {
-            row_blocks[block_idx++] = row;
-            current_block_rows = 1;
-            current_block_nnz = row_nnz;
-        } else {
-            current_block_rows++;
-            current_block_nnz += row_nnz;
+        // Strategy 2: Group similar density rows with load balancing
+        int rows_in_block = 0;
+        int total_nnz_in_block = 0;
+        int lookahead = row;
+        
+        // Look ahead to group similar rows
+        while (lookahead < rows && rows_in_block < MAX_ROWS_PER_BLOCK) {
+            int next_row_nnz = row_nnz[lookahead];
+            
+            // Check if adding this row exceeds load balance threshold
+            if (rows_in_block > 0 && total_nnz_in_block + next_row_nnz > MAX_NNZ_PER_BLOCK) {
+                break;
+            }
+            
+            total_nnz_in_block += next_row_nnz;
+            rows_in_block++;
+            lookahead++;
         }
+        
+        // Ensure we always make progress (handle edge case)
+        if (rows_in_block == 0) {
+            // This row is too large but we need to process it anyway
+            lookahead = row + 1;
+        }
+        
+        row_blocks[block_idx++] = lookahead;
+        row = lookahead;
     }
-
-    // Handle any remaining rows
-    if (current_block_rows > 0) {
-        row_blocks[block_idx++] = rows;
-    }
-
+    
+    free(row_nnz);
     return block_idx;
 }
+
 
 // Comparison function for qsort
 static int compare_ints(const void *a, const void *b) {
@@ -66,7 +86,7 @@ static int compare_ints(const void *a, const void *b) {
     return (ia > ib) - (ia < ib);
 }
 
-static struct MAT_STATS calculate_matrix_stats(const struct CSR *csr_matrix) {
+struct MAT_STATS calculate_matrix_stats(const struct CSR *csr_matrix) {
     struct MAT_STATS stats = {0}; // Initialize all fields to 0
     
     if (!csr_matrix || !csr_matrix->row_pointers || csr_matrix->num_rows <= 0) {
@@ -89,7 +109,7 @@ static struct MAT_STATS calculate_matrix_stats(const struct CSR *csr_matrix) {
     }
     
     // Basic statistics
-    stats.mean_nnz_per_row = (double)stats.total_nnz / rows;
+    stats.mean_nnz_per_row = (double) stats.total_nnz / (double) rows;
     stats.min_nnz_per_row = row_nnz[0];
     stats.max_nnz_per_row = row_nnz[0];
     
