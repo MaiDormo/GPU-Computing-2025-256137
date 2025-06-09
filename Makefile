@@ -15,11 +15,11 @@ DEBUG_NV_OPT := $(BASE_NV_OPT) -g -G -O0 -DDEBUG --device-debug
 
 # Release flags with performance optimizations
 RELEASE_OPT := $(BASE_OPT) -O3 -DNDEBUG -march=native -funroll-loops -flto
-RELEASE_NV_OPT := $(BASE_NV_OPT) -O3 --gpu-architecture=sm_89 -DNDEBUG --use_fast_math -Xptxas -O3
+RELEASE_NV_OPT := $(BASE_NV_OPT) -O3 --gpu-architecture=sm_80 -DNDEBUG --use_fast_math -Xptxas -O3
 
 # Profile flags for performance analysis
 PROFILE_OPT := $(BASE_OPT) -O3 -g -DNDEBUG -march=native -funroll-loops
-PROFILE_NV_OPT := $(BASE_NV_OPT) -O3 --gpu-architecture=sm_89 -DNDEBUG -lineinfo -g
+PROFILE_NV_OPT := $(BASE_NV_OPT) -O3 --gpu-architecture=sm_80 -DNDEBUG -lineinfo -g
 
 # Set flags based on build type
 ifeq ($(BUILD_TYPE),debug)
