@@ -47,6 +47,14 @@ void print_spmv_performance(
     int max_samples
 );
 
+/**
+ * Print usefult matrix stats for better profiling and understading
+ */
+
+void print_matrix_stats(
+    const struct CSR *matrix
+);
+
 #ifdef __cplusplus
 }
 #endif

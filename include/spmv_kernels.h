@@ -4,7 +4,7 @@
 #include "spmv_type.h"
 
 #define WARP_SIZE 32
-#define BLOCK_SIZE 512
+#define BLOCK_SIZE 1024
 
 /**
  * Simple CSR SpMV kernel that maps one thread to one row
