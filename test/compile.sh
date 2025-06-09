@@ -1,4 +1,5 @@
 #!/bin/bash
+# filepath: /home/elia.gatti/GPU-Computing-2025-256137/test/compile_perf.sh
 
 if [ $# -eq 0 ]; then
   echo "Usage: $0 filename.cu"
@@ -10,7 +11,18 @@ module load CUDA/12.3.2
 filename=$(basename -- "$1")
 name="${filename%.*}"
 
+# Maximum performance compilation
 nvcc -O3 --use_fast_math --gpu-architecture=sm_80 -m64 \
-     -Xcompiler "-Wall -Wextra -O3" \
-     -o "$name.exec" "$1" -lcusparse
-echo "Compiled $1 into $name.exec"
+     --maxrregcount=255 \
+     --ptxas-options=--warn-on-spills,--optimize-float-atomics \
+     -Xcompiler "-Ofast -march=native -mtune=native -funroll-loops -ffast-math -fopenmp -DNDEBUG" \
+     -Xptxas -O3,--def-load-cache=ca,--def-store-cache=wb \
+     --relocatable-device-code=false \
+     --restrict \
+     --fmad=true \
+     -I../include \
+     -o "$name.perf" "$1" \
+     ../lib/read_file_lib.c ../lib/coo_to_csr.c ../lib/spmv_utils.c \
+     -lcusparse -lcudart
+
+echo "Compiled $1 into $name.perf with maximum performance optimizations"
