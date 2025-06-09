@@ -168,24 +168,26 @@ __global__ void adaptive_csr(const dtype *csr_values, const int *csr_row_ptr,
             thread_sum += csr_values[i] * __ldg(&vec[csr_col_indices[i]]);
         }
 
+        __syncthreads();
+
         // Two-level reduction: first within warps, then across warps
         #pragma unroll
         for (int delta = WARP_SIZE >> 1; delta > 0; delta >>= 1) {
             thread_sum += __shfl_down_sync(0xFFFFFFFF, thread_sum, delta);
         }
 
-        if (WARP_ID == 0) {
-            SHARED_MEM[WARP_NUM] = thread_sum;
-        }
-
-        if (tid < WARP_SIZE) {
+        // Final reduction across warps using only the first warp
+        if (WARP_NUM == 0) { 
+            dtype warp_sum = (WARP_ID < blockDim.x / WARP_SIZE) ? SHARED_MEM[WARP_ID] : 0.0;
+            
             #pragma unroll
-            for (int delta = WARP_SIZE / 2; delta > 0; delta >>= 1) {
-                thread_sum += __shfl_down_sync(0xFFFFFFFF, thread_sum, delta);
+            for (int delta = WARP_SIZE >> 1; delta > 0; delta >>= 1) {
+                warp_sum += __shfl_down_sync(0xFFFFFFFF, warp_sum, delta);
             }
 
-            if (tid == 0)
-                res[row_idx] = thread_sum;
+            if (WARP_ID == 0) {
+                res[row_idx] = warp_sum;
+            }
         }
     }
 }
