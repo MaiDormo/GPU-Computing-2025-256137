@@ -1,177 +1,242 @@
 #!/bin/bash
-# filepath: extract_spmv_data.sh
-# Script to extract SpMV benchmark data from output files and format as CSV
+# Script to extract SpMV benchmark data from various implementation output files
+# Usage: ./extract_spmv_data.sh [output_file.csv]
 
-# Output CSV file
-OUTPUT_CSV="spmv_benchmark_results.csv"
+OUTPUT_CSV="${1:-spmv_comprehensive_results.csv}"
 
 # Create CSV header
-echo "Platform,Implementation,Dataset,Rows,Columns,NNZ,AvgNNZPerRow,MinNNZ,MaxNNZ,PercentageNNZ,ExecutionTime_ms,Bandwidth_GB_s,Performance_GFLOPS" > "$OUTPUT_CSV"
+echo "Platform,Implementation,Dataset,Matrix_Name,Rows,Columns,NNZ,Mean_NNZ_Per_Row,Min_NNZ_Per_Row,Max_NNZ_Per_Row,Median_NNZ_Per_Row,Std_Dev_NNZ,Sparsity_Ratio,Percentage_NNZ,Block_Size,Num_Blocks,Warps_Per_Block,Shared_Memory_Bytes,Execution_Time_Seconds,Bandwidth_GB_s,Performance_GFLOPS" > "$OUTPUT_CSV"
 
-# Process each benchmark file
+# Function to process each benchmark file
 process_benchmark_file() {
     local file=$1
     local filename=$(basename "$file")
     
-    # Determine if it's CPU or GPU by checking for nvidia-smi output
-    local platform="CPU"  # Default to CPU
-    if grep -q "NVIDIA-SMI" "$file"; then
+    echo "Processing $file..."
+    
+    # Determine platform (CPU or GPU)
+    local platform="CPU"
+    if grep -q "NVIDIA-SMI\|nvidia-smi" "$file"; then
         platform="GPU"
     fi
     
     # Extract implementation type from filename
     local implementation=""
-    if [[ "$filename" =~ cpu_([^_]+)_spmv ]]; then
-        implementation="${BASH_REMATCH[1]}"
-    elif [[ "$filename" =~ gpu_([^_]+)_spmv ]]; then
-        implementation="${BASH_REMATCH[1]}"
-    elif [[ "$filename" == *"simple_spmv"* ]]; then
-        implementation="simple"
-    elif [[ "$filename" == *"value_sequential_spmv"* ]]; then
-        implementation="value_sequential"
-    elif [[ "$filename" == *"strided"* ]]; then
-        implementation="strided"
-    elif [[ "$filename" == *"vector"* ]]; then
+    if [[ "$filename" =~ vector_spmv ]]; then
         implementation="vector"
-    elif [[ "$filename" == *"ilp"* ]]; then
-        implementation="ilp"
-    elif [[ "$filename" == *"omp"* ]]; then
-        implementation="omp"
+    elif [[ "$filename" =~ adaptive_spmv ]]; then
+        implementation="adaptive"
+    elif [[ "$filename" =~ simple_spmv ]]; then
+        implementation="simple"
+    elif [[ "$filename" =~ value_sequential_spmv ]]; then
+        implementation="value_sequential"
+    elif [[ "$filename" =~ value_blocked_spmv ]]; then
+        implementation="value_blocked"
+    elif [[ "$filename" =~ cpu_([^_]+)_spmv ]]; then
+        implementation="cpu_${BASH_REMATCH[1]}"
+    elif [[ "$filename" =~ experiment_spmv ]]; then
+        implementation="experiment"
     else
-        # Default fallback
-        implementation=$(echo "$file" | sed -E 's/.*_([^_]+)_spmv_benchmark.*/\1/g')
-        # If still no match, use filename
-        if [[ "$implementation" == "$file" ]]; then
-            implementation=$(basename "$file" | sed 's/_spmv_benchmark.*//g')
+        # Extract from filename pattern
+        implementation=$(echo "$filename" | sed -E 's/.*_([^_]+)_spmv_benchmark.*/\1/' | sed 's/_benchmark.*//')
+        if [[ "$implementation" == "$filename" ]]; then
+            implementation="unknown"
         fi
     fi
-
-    # Extract datasets and their metrics
+    
+    # Process the file using AWK
     awk -v platform="$platform" -v impl="$implementation" '
     BEGIN {
-        dataset = ""; 
-        in_matrix = 0;
-        rows = ""; cols = ""; nnz = ""; avg_nnz = ""; min_nnz = ""; max_nnz = ""; perc_nnz = "";
-        time = ""; bandwidth = ""; perf = "";
-        current_section = "";
+        dataset = ""; matrix_name = "";
+        rows = ""; cols = ""; nnz = ""; mean_nnz = ""; min_nnz = ""; max_nnz = ""; median_nnz = "";
+        std_dev = ""; sparsity = ""; perc_nnz = "";
+        block_size = ""; num_blocks = ""; warps_per_block = ""; shared_mem = "";
+        time = ""; bandwidth = ""; gflops = "";
+        in_dataset = 0;
+        
+        # For experiment files
+        exp_block_num = ""; exp_block_size = "";
     }
     
-    # Start of a new dataset section and end of previous one
+    # Handle experiment format
+    /^BLOCK_NUM=/ {
+        split($0, a, "[ =]");
+        exp_block_num = a[2];
+        exp_block_size = a[4];
+    }
+    
+    # Dataset detection
     /^Testing dataset:/ {
-        # Output previous dataset if we have one
-        if (in_matrix && rows != "" && time != "") {
-            printf "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n", 
-                   platform, impl, dataset, rows, cols, nnz, avg_nnz, min_nnz, max_nnz, 
-                   perc_nnz, time, bandwidth, perf;
-            
-            # Reset for next dataset
-            rows = ""; cols = ""; nnz = ""; avg_nnz = ""; min_nnz = ""; max_nnz = ""; perc_nnz = "";
-            time = ""; bandwidth = ""; perf = "";
+        # Output previous dataset if we have complete data
+        if (in_dataset && rows != "" && time != "") {
+            output_csv_line();
         }
         
-        # New dataset starts
+        # Extract new dataset
         dataset = $3;
-        in_matrix = 1;
-        current_section = "matrix_info";
+        gsub(/\/.*\.mtx/, "", dataset);  # Remove path and extension
+        matrix_name = dataset;
+        
+        # Reset all variables
+        reset_variables();
+        in_dataset = 1;
     }
     
-    # Pattern 1: Matrix metadata section
-    /^Number of Columns:/ && in_matrix { cols = $4; }
-    /^Number of Rows:/ && in_matrix { rows = $4; }
-    /^Number of NNZ:/ && in_matrix { nnz = $4; }
-    /^Average NNZ per Row:/ && in_matrix { avg_nnz = $5; }
-    /^Min NNZ:/ && in_matrix { min_nnz = $3; }
-    /^Max NNZ:/ && in_matrix { max_nnz = $3; }
-    /^Percentage of NNZ:/ && in_matrix { 
-        perc_nnz = $4; 
+    # Matrix analysis line (for optimal launch config)
+    /^Matrix analysis: mean_nnz_per_row/ {
+        mean_nnz = $4;
+    }
+    
+    # Launch configuration
+    /^Optimal launch config:/ {
+        num_blocks = $4;
+        block_size = $6;
+        if ($0 ~ /warps per block:/) {
+            match($0, /warps per block: ([0-9]+)/, arr);
+            warps_per_block = arr[1];
+        }
+    }
+    
+    /^Final launch config:/ {
+        num_blocks = $4;
+        block_size = $7;
+        if ($0 ~ /bytes shared memory/) {
+            match($0, /([0-9]+) bytes shared memory/, arr);
+            shared_mem = arr[1];
+        }
+    }
+    
+    # Matrix Statistics section
+    /^Matrix dimensions:/ {
+        rows = $3;
+        gsub(/x/, "", rows);
+        cols = $5;
+    }
+    
+    /^Total NNZ:/ { nnz = $3; }
+    /^Mean NNZ per Row:/ { mean_nnz = $5; }
+    /^Min NNZ per Row:/ { 
+        min_nnz = $5;
+        gsub(/,/, "", min_nnz);
+        if ($0 ~ /Max NNZ per Row:/) {
+            match($0, /Max NNZ per Row: ([0-9]+)/, arr);
+            max_nnz = arr[1];
+        }
+    }
+    /^Median NNZ per Row:/ { median_nnz = $5; }
+    /^Standard Deviation NNZ per Row:/ { std_dev = $6; }
+    /^Sparsity Ratio:/ { 
+        sparsity = $3;
+        if ($0 ~ /\(([0-9.]+)% sparse\)/) {
+            match($0, /\(([0-9.]+)% sparse\)/, arr);
+            sparsity = arr[1] / 100.0;
+        }
+    }
+    
+    # Performance Results section
+    /^Matrix size:.*with.*non-zero elements/ {
+        # Fallback extraction if matrix dimensions were missed
+        if (rows == "" || cols == "" || nnz == "") {
+            match($0, /([0-9]+) x ([0-9]+) with ([0-9]+)/, arr);
+            if (rows == "") rows = arr[1];
+            if (cols == "") cols = arr[2];
+            if (nnz == "") nnz = arr[3];
+        }
+    }
+    
+    /^Percentage of NNZ:/ { 
+        perc_nnz = $4;
         gsub(/%/, "", perc_nnz);
     }
     
-    # Pattern 2: Performance section indicators
-    /^SpMV Performance/ { current_section = "performance"; }
-    
-    # Matrix size line (fallback if we didnt get matrix info before)
-    /^Matrix size:/ && current_section == "performance" && (rows == "" || cols == "" || nnz == "") { 
-        split($0, parts, "[ x]");
-        for (i=1; i<=length(parts); i++) {
-            if (parts[i] == "size:") {
-                rows = parts[i+1];
-                cols = parts[i+3];
-            }
-            if (parts[i] == "with") {
-                nnz = parts[i+1];
-                break;
-            }
-        }
-    }
-    
-    # Use consistent pattern for time extraction
-    /^Average execution time:/ {
+    /^Average execution time:/ { 
         time = $4;
-        if ($5 == "seconds") {
-            time = time * 1000;  # Convert to ms
+        # Ensure time is in seconds
+        if ($5 == "ms" || $5 == "milliseconds") {
+            time = time / 1000.0;
         }
     }
     
-    # Bandwidth and GFLOPS extraction
-    /^Memory bandwidth/ { bandwidth = $(NF-1); }
-    /^Computational performance:/ { perf = $(NF-1); }
-    
-    # Flag to indicate we are at the results section
-    /^First (few |non-zero |)elements? of result vector/ { 
-        current_section = "results";
+    /^Memory bandwidth \(estimated\):/ { 
+        bandwidth = $4;
     }
     
-    # At end of file, output any remaining dataset
+    /^Computational performance:/ { 
+        gflops = $3;
+    }
+    
+    # For experiment format, also capture matrix info from different location
+    /^Number of Columns:/ && impl == "experiment" { cols = $4; }
+    /^Number of Rows:/ && impl == "experiment" { rows = $4; }
+    /^Number of NNZ:/ && impl == "experiment" { nnz = $4; }
+    /^Average NNZ per Row:/ && impl == "experiment" { mean_nnz = $5; }
+    
+    # End of file processing
     END {
-        if (in_matrix && rows != "" && time != "") {
-            printf "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n", 
-                   platform, impl, dataset, rows, cols, nnz, avg_nnz, min_nnz, max_nnz, 
-                   perc_nnz, time, bandwidth, perf;
+        if (in_dataset && rows != "" && time != "") {
+            output_csv_line();
         }
+    }
+    
+    function reset_variables() {
+        rows = ""; cols = ""; nnz = ""; mean_nnz = ""; min_nnz = ""; max_nnz = ""; median_nnz = "";
+        std_dev = ""; sparsity = ""; perc_nnz = "";
+        block_size = ""; num_blocks = ""; warps_per_block = ""; shared_mem = "";
+        time = ""; bandwidth = ""; gflops = "";
+    }
+    
+    function output_csv_line() {
+        # Use experiment values if available
+        if (exp_block_num != "") num_blocks = exp_block_num;
+        if (exp_block_size != "") block_size = exp_block_size;
+        
+        printf "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n",
+               platform, impl, dataset, matrix_name, rows, cols, nnz, mean_nnz, 
+               min_nnz, max_nnz, median_nnz, std_dev, sparsity, perc_nnz,
+               block_size, num_blocks, warps_per_block, shared_mem,
+               time, bandwidth, gflops;
     }
     ' "$file" >> "$OUTPUT_CSV"
 }
 
-# Find all benchmark output files
-benchmark_files=$(find . -name "*spmv_benchmark*.out")
+# Find and process all benchmark output files
+echo "Searching for SpMV benchmark output files..."
+
+# Look for various patterns of benchmark files, excluding the results folder
+benchmark_files=$(find . -path "./results" -prune -o -name "*spmv*benchmark*.out" -print -o -name "*vector*.out" -print -o -name "*adaptive*.out" -print -o -name "*experiment*.out" -print | sort)
+
+if [ -z "$benchmark_files" ]; then
+    echo "No benchmark output files found!"
+    echo "Looking for files matching patterns: *spmv*benchmark*.out, *vector*.out, *adaptive*.out, *experiment*.out"
+    echo "Excluding: ./results folder"
+    exit 1
+fi
+
+echo "Found $(echo "$benchmark_files" | wc -l) benchmark files:"
+echo "$benchmark_files"
+echo ""
 
 # Process each file
 for file in $benchmark_files; do
-    echo "Processing $file..."
-    process_benchmark_file "$file"
+    if [ -f "$file" ]; then
+        process_benchmark_file "$file"
+    fi
 done
 
-# Clean up the CSV by fixing any missing data
-# Datasets have the same matrix properties regardless of implementation
-awk 'BEGIN { FS=OFS="," }
-    NR==1 {header=$0; print; next}
-    {
-        # Store matrix properties by dataset
-        if ($3 in datasets) {
-            # Fill in any missing values from previous records of same dataset
-            if ($4 == "") $4 = datasets[$3]["rows"]
-            if ($5 == "") $5 = datasets[$3]["cols"]
-            if ($6 == "") $6 = datasets[$3]["nnz"]
-            if ($7 == "") $7 = datasets[$3]["avg_nnz"]
-            if ($8 == "") $8 = datasets[$3]["min_nnz"]
-            if ($9 == "") $9 = datasets[$3]["max_nnz"]
-            if ($10 == "") $10 = datasets[$3]["perc_nnz"]
-        } else {
-            # First time seeing this dataset, store values
-            datasets[$3]["rows"] = $4
-            datasets[$3]["cols"] = $5
-            datasets[$3]["nnz"] = $6
-            datasets[$3]["avg_nnz"] = $7
-            datasets[$3]["min_nnz"] = $8
-            datasets[$3]["max_nnz"] = $9
-            datasets[$3]["perc_nnz"] = $10
-        }
-        print
-    }' "$OUTPUT_CSV" > temp.csv && mv temp.csv "$OUTPUT_CSV"
+# Clean up any duplicate headers that might have been added
+grep -v "^Platform,Implementation" "$OUTPUT_CSV" > temp.csv
+echo "Platform,Implementation,Dataset,Matrix_Name,Rows,Columns,NNZ,Mean_NNZ_Per_Row,Min_NNZ_Per_Row,Max_NNZ_Per_Row,Median_NNZ_Per_Row,Std_Dev_NNZ,Sparsity_Ratio,Percentage_NNZ,Block_Size,Num_Blocks,Warps_Per_Block,Shared_Memory_Bytes,Execution_Time_Seconds,Bandwidth_GB_s,Performance_GFLOPS" > "$OUTPUT_CSV"
+cat temp.csv >> "$OUTPUT_CSV"
+rm -f temp.csv
 
-echo "Data extraction complete. Results saved to $OUTPUT_CSV"
-
-# Print preview of CSV
-echo "Preview of CSV data:"
-head -n 5 "$OUTPUT_CSV"
+echo ""
+echo "Data extraction complete!"
+echo "Results saved to: $OUTPUT_CSV"
+echo ""
+echo "Summary:"
+echo "Total records: $(tail -n +2 "$OUTPUT_CSV" | wc -l)"
+echo "Unique implementations: $(tail -n +2 "$OUTPUT_CSV" | cut -d',' -f2 | sort -u | wc -l)"
+echo "Unique datasets: $(tail -n +2 "$OUTPUT_CSV" | cut -d',' -f3 | sort -u | wc -l)"
+echo ""
+echo "Preview of first 5 records:"
+head -n 6 "$OUTPUT_CSV" | column -t -s','
