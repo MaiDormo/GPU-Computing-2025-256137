@@ -21,8 +21,8 @@ nvcc -O3 --use_fast_math --gpu-architecture=sm_80 -m64 \
      --restrict \
      --fmad=true \
      -I../include \
-     -o "$name.perf" "$1" \
+     -o "$name.exec" "$1" \
      ../lib/read_file_lib.c ../lib/coo_to_csr.c ../lib/spmv_utils.c \
      -lcusparse -lcudart
 
-echo "Compiled $1 into $name.perf with maximum performance optimizations"
+echo "Compiled $1 into $name.exec with maximum performance optimizations"
