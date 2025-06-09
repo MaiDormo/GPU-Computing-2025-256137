@@ -172,6 +172,11 @@ if (!h_vec || !h_res || !h_csr.values || !h_csr.col_indices || !h_csr.row_pointe
     double flops = 2.0 * nnz;
     double gflops = flops / (avg_time * 1.0e9);  // GFLOPS
 
+
+    // --- Print Other Stats ---
+    print_matrix_stats(&h_csr);
+
+
     // --- Print Results ---
     print_spmv_performance(
         "CSR", 

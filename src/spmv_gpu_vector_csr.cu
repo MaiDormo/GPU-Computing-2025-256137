@@ -36,15 +36,13 @@ int main(int argc, char ** argv) {
     h_csr.values = (dtype*)malloc(nnz * sizeof(dtype));
     h_csr.col_indices = (int*)malloc(nnz * sizeof(int));
     h_csr.row_pointers = (int*)calloc(n + 1, sizeof(int)); // Zero initialization is important
-    int *h_block_rows = (int*)calloc(n, sizeof(int));
 
-    if (!h_vec || !h_res || !h_csr.values || !h_csr.col_indices || !h_csr.row_pointers || !h_block_rows) {
+    if (!h_vec || !h_res || !h_csr.values || !h_csr.col_indices || !h_csr.row_pointers) {
         perror("Failed to allocate host memory");
         // Free any successfully allocated memory before exiting
         free(h_coo.a_val); free(h_coo.a_row); free(h_coo.a_col);
         free(h_vec); free(h_res);
         free(h_csr.values); free(h_csr.col_indices); free(h_csr.row_pointers);
-        free(h_block_rows);
         return -1;
     }
 
@@ -59,7 +57,6 @@ int main(int argc, char ** argv) {
          free(h_coo.a_val); free(h_coo.a_row); free(h_coo.a_col);
          free(h_vec); free(h_res);
          free(h_csr.values); free(h_csr.col_indices); free(h_csr.row_pointers);
-         free(h_block_rows);
          return -1;
     }
 
@@ -68,13 +65,9 @@ int main(int argc, char ** argv) {
     free(h_coo.a_row); h_coo.a_row = NULL;
     free(h_coo.a_col); h_coo.a_col = NULL;
 
-    // int countRowBlocks = adaptive_row_selection(h_csr.row_pointers, n, h_block_rows, WARP_SIZE, BLOCK_SIZE);
-    // printf("Number of rowBlocks: %d\n", countRowBlocks);
-
     // --- Device Data Structures ---
     struct CSR d_csr; // Holds device pointers
     dtype *d_vec = NULL, *d_res = NULL;
-    int * d_block_rows;
 
     // --- Allocate Device Memory ---
     cudaMalloc(&d_vec, m * sizeof(dtype));
@@ -82,7 +75,6 @@ int main(int argc, char ** argv) {
     cudaMalloc(&d_csr.values, h_csr.num_non_zeros * sizeof(dtype));
     cudaMalloc(&d_csr.col_indices, h_csr.num_non_zeros * sizeof(int));
     cudaMalloc(&d_csr.row_pointers, (n + 1) * sizeof(int));
-    // cudaMalloc(&d_block_rows, countRowBlocks * sizeof(int));
     d_csr.num_rows = n;
     d_csr.num_cols = m;
     d_csr.num_non_zeros = h_csr.num_non_zeros;
@@ -93,7 +85,6 @@ int main(int argc, char ** argv) {
     cudaMemcpy(d_csr.values, h_csr.values, h_csr.num_non_zeros * sizeof(dtype), cudaMemcpyHostToDevice);
     cudaMemcpy(d_csr.col_indices, h_csr.col_indices, h_csr.num_non_zeros * sizeof(int), cudaMemcpyHostToDevice);
     cudaMemcpy(d_csr.row_pointers, h_csr.row_pointers, (n + 1) * sizeof(int), cudaMemcpyHostToDevice);
-    // cudaMemcpy(d_block_rows, h_block_rows, countRowBlocks * sizeof(int), cudaMemcpyHostToDevice);
 
     // --- Kernel Launch Configuration --- 
     const int warps_per_block = BLOCK_SIZE/ WARP_SIZE;
@@ -191,14 +182,12 @@ int main(int argc, char ** argv) {
     cudaFree(d_csr.values);
     cudaFree(d_csr.col_indices);
     cudaFree(d_csr.row_pointers);
-    // cudaFree(d_block_rows);
 
     free(h_vec);
     free(h_res);
     free(h_csr.values);
     free(h_csr.col_indices);
     free(h_csr.row_pointers);
-    free(h_block_rows);
 
     return 0;
 }
