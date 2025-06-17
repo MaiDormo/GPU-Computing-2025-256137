@@ -140,21 +140,6 @@ int main(int argc, char ** argv) {
     }
     dtype avg_time = total_time / NUM_RUNS;
 
-    // Calculate effective memory access more accurately
-    size_t bytes_read_vals_cols = (size_t)nnz * (sizeof(dtype) + sizeof(int)); // values and col indices
-    size_t bytes_read_row_ptr = (size_t)(n + 1) * sizeof(int);                // row pointers
-
-    // Count unique column indices
-    int* unique_cols = (int*)calloc(m, sizeof(int));
-    size_t unique_count = 0;
-    for (int i = 0; i < nnz; i++) {
-        if (unique_cols[h_csr.col_indices[i]] == 0) {
-            unique_cols[h_csr.col_indices[i]] = 1;
-            unique_count++;
-        }
-    }
-    free(unique_cols);
-
     double bandwidth, gflops;
     calculate_bandwidth(n,m,nnz,h_csr.col_indices, avg_time, &bandwidth, &gflops);
 
