@@ -217,57 +217,8 @@ int main(int argc, char ** argv) {
     }
     dtype avg_time = total_time / NUM_RUNS;
 
-    // Calculate memory bandwidth more accurately for SpMV
-    // For CSR SpMV, memory access pattern is:
-    // 1. Read all row_pointers (accessed sequentially)
-    // 2. Read all values and col_indices (accessed sequentially) 
-    // 3. Read vector elements (potentially random access pattern)
-    // 4. Write result vector (sequential)
-
-    size_t bytes_read_vals = (size_t)nnz * sizeof(dtype);           // matrix values
-    size_t bytes_read_cols = (size_t)nnz * sizeof(int);            // column indices  
-    size_t bytes_read_row_ptr = (size_t)(n + 1) * sizeof(int);     // row pointers
-    
-    // For vector reads, each column index causes a vector element read
-    // This gives a more realistic bandwidth estimate for custom kernels
-    // that may not have sophisticated caching mechanisms
-    size_t bytes_read_vec = (size_t)nnz * sizeof(dtype);           // vector reads (one per nnz)
-    
-    size_t bytes_written = (size_t)n * sizeof(dtype);              // result vector
-    
-    // Total memory traffic
-    size_t total_bytes = bytes_read_vals + bytes_read_cols + 
-                        bytes_read_row_ptr + bytes_read_vec + bytes_written;
-
-    // Memory bandwidth calculation
-    double bandwidth = total_bytes / (avg_time * 1.0e9);  // GB/s
-    
-    // Computational intensity
-    double flops = 2.0 * nnz;  // Each non-zero: 1 multiply + 1 add
-    double gflops = flops / (avg_time * 1.0e9);  // GFLOPS
-    
-    // Calculate arithmetic intensity for roofline analysis
-    double arithmetic_intensity = flops / (double)total_bytes;  // FLOPS/Byte
-
-    // --- Print Matrix Statistics ---
-    print_matrix_stats(&h_csr);
-
-    // --- Print Results with Additional Metrics ---
-    printf("\n=== Vector CSR Performance Results ===\n");
-    printf("Matrix: %s\n", argv[1]);
-    printf("Dimensions: %d x %d, NNZ: %d\n", n, m, nnz);
-    printf("Average time: %.6f seconds\n", avg_time);
-    printf("Memory bandwidth: %.2f GB/s\n", bandwidth);
-    printf("Compute performance: %.2f GFLOPS\n", gflops);
-    printf("Arithmetic intensity: %.3f FLOPS/Byte\n", arithmetic_intensity);
-    printf("Memory breakdown:\n");
-    printf("  Matrix values: %.2f MB\n", bytes_read_vals / (1024.0 * 1024.0));
-    printf("  Column indices: %.2f MB\n", bytes_read_cols / (1024.0 * 1024.0));
-    printf("  Row pointers: %.2f MB\n", bytes_read_row_ptr / (1024.0 * 1024.0));
-    printf("  Vector reads: %.2f MB\n", bytes_read_vec / (1024.0 * 1024.0));
-    printf("  Result writes: %.2f MB\n", bytes_written / (1024.0 * 1024.0));
-    printf("  Total memory: %.2f MB\n", total_bytes / (1024.0 * 1024.0));
-
+    double bandwidth, gflops;
+    calculate_bandwidth(n,m,nnz,h_csr.col_indices, avg_time, &bandwidth, &gflops);
     // Also call the standard print function for consistency
     print_spmv_performance(
         "Vector CSR Double Buffer", 

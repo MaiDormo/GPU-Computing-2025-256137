@@ -390,11 +390,9 @@ int main(int argc, char ** argv) {
     }
     dtype avg_time = total_time / NUM_RUNS;
 
-    // Use refactored bandwidth calculation
-    double bandwidth = calculate_hybrid_bandwidth(n, m, nnz, h_csr.col_indices, 
-                                                 num_short, num_long, avg_time);
-    double flops = 2.0 * nnz;
-    double gflops = flops / (avg_time * 1.0e9);
+
+    double bandwidth, gflops;
+    calculate_hybrid_bandwidth(n, m, nnz, h_csr.col_indices, num_short, num_long, avg_time, &bandwidth, &gflops);
 
     // --- Print Matrix Statistics ---
     print_matrix_stats(&h_csr);

@@ -191,32 +191,8 @@ int main(int argc, char ** argv) {
     }
     dtype avg_time = total_time / NUM_RUNS;
 
-    // Calculate effective memory access more accurately
-    size_t bytes_read_vals_cols = (size_t)nnz * (sizeof(dtype) + sizeof(int));  // CSR values + column indices
-    size_t bytes_read_row_ptr = (size_t)(n + 1) * sizeof(int);                 // Row pointers (all accessed)
-    
-    // Each CUDA block reads 2 elements from row_blocks array (start and end)
-    size_t bytes_read_row_blocks = (size_t)optimal_num_blocks * 2 * sizeof(int); 
-
-    // Count unique column indices (more accurate than assuming all vector elements)
-    int* unique_cols = (int*)calloc(m, sizeof(int));
-    size_t unique_count = 0;
-    for (int i = 0; i < nnz; i++) {
-        if (unique_cols[h_csr.col_indices[i]] == 0) {
-            unique_cols[h_csr.col_indices[i]] = 1;
-            unique_count++;
-        }
-    }
-    free(unique_cols);
-
-    size_t bytes_read_vec = unique_count * sizeof(dtype);
-    size_t bytes_read = bytes_read_vals_cols + bytes_read_row_ptr + bytes_read_vec + bytes_read_row_blocks;
-    size_t bytes_written = (size_t)n * sizeof(dtype);
-    size_t total_bytes = bytes_read + bytes_written;
-
-    double bandwidth = total_bytes / (avg_time * 1.0e9);
-    double flops = 2.0 * nnz;
-    double gflops = flops / (avg_time * 1.0e9);
+   double bandwidth, gflops;
+   calculate_adaptive_bandwidth(n,m,nnz,h_csr.col_indices, optimal_num_blocks, avg_time, &bandwidth, &gflops);
 
     // --- Print Other Stats ---
     print_matrix_stats(&h_csr);

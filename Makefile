@@ -5,6 +5,9 @@ NVCC := nvcc
 # Build type configuration (default to release)
 BUILD_TYPE ?= release
 
+# Local build configuration (Set LOCAL=1 for local build)
+LOCAL ?= 0
+
 # Base compiler flags
 BASE_OPT := -std=c11 -Wall -Wextra -lm
 BASE_NV_OPT := -m64 -Xcompiler -fopenmp
@@ -13,8 +16,17 @@ BASE_NV_OPT := -m64 -Xcompiler -fopenmp
 DEBUG_OPT := $(BASE_OPT) -g -O0 -DDEBUG -fsanitize=address -fsanitize=undefined
 DEBUG_NV_OPT := $(BASE_NV_OPT) -g -G -O0 -DDEBUG --device-debug
 
-# Release flags with performance optimizations
-RELEASE_OPT := $(BASE_OPT) -O3 -DNDEBUG -march=native -funroll-loops -flto
+# Set GPU architecture and LTO flags based on build environment
+ifeq ($(LOCAL),1)
+    # disable LTO for CUDA compatibility
+	RELEASE_OPT := $(BASE_OPT) -O3 -DNDEBUG -march=native -funroll-loops
+	PROFILE_OPT := $(BASE_OPT) -O3 -g -DNDEBUG -march=native -funroll-loops
+else
+	# enabled LTO for CUDA compatibility
+	RELEASE_OPT := $(BASE_OPT) -O3 -DNDEBUG -march=native -funroll-loops -flto
+	PROFILE_OPT := $(BASE_OPT) -O3 -g -DNDEBUG -march=native -funroll-loops
+endif
+
 # Release flags with performance optimizations
 RELEASE_NV_OPT := $(BASE_NV_OPT) -O3 --gpu-architecture=sm_80 -DNDEBUG --use_fast_math -Xptxas -O3 \
 					--maxrregcount=255 \
@@ -23,7 +35,6 @@ RELEASE_NV_OPT := $(BASE_NV_OPT) -O3 --gpu-architecture=sm_80 -DNDEBUG --use_fas
 					-Xptxas -O3,--def-load-cache=ca,--def-store-cache=wb \
 					--relocatable-device-code=false \
 					--restrict \
-					--extended-lambda \
 					--fmad=true
 
 # Profile flags for performance analysis
@@ -35,7 +46,6 @@ PROFILE_NV_OPT := $(BASE_NV_OPT) -O3 --gpu-architecture=sm_80 -DNDEBUG -lineinfo
 					-Xptxas -O3,--def-load-cache=ca,--def-store-cache=wb \
 					--relocatable-device-code=false \
 					--restrict \
-					--extended-lambda \
 					--fmad=true
 
 # Set flags based on build type
@@ -87,6 +97,19 @@ release:
 profile:
 	$(MAKE) BUILD_TYPE=profile all
 
+# Local build targets
+local:
+	$(MAKE) LOCAL=1 all
+
+local-debug:
+	$(MAKE) LOCAL=1 BUILD_TYPE=debug all
+
+local-release:
+	$(MAKE) LOCAL=1 BUILD_TYPE=release all
+
+local-profile:
+	$(MAKE) LOCAL=1 BUILD_TYPE=profile all
+
 # Performance optimization target with additional flags
 perf: 
 	$(MAKE) BUILD_TYPE=release RELEASE_OPT="$(RELEASE_OPT) -fprofile-use=profile.profdata" all
@@ -104,10 +127,15 @@ $(OBJ_FOLDER)/%.o: $(LIB_FOLDER)/%.c
 	$(CC) -c $< -o $@ $(OPT) -fopenmp
 
 # Rule for compiling cuda
+# Rule for compiling cuda with environment-specific commands
 $(BIN_FOLDER)/%.exec: $(SRC_FOLDER)/%.cu $(LIB_OBJECTS)
 	@mkdir -p $(BIN_FOLDER)
-	@echo "Building CUDA $@ with $(BUILD_TYPE) configuration..."
+	@echo "Building CUDA $@ with $(BUILD_TYPE) configuration (GPU arch: sm80)..."
+ifeq ($(LOCAL),1)
+	$(NVCC) $< $(LIB_FOLDER)/spmv_kernels.cu $(LIB_OBJECTS) -o $@ $(NV_OPT)
+else
 	@bash -c "source /etc/profile.d/modules.sh && module load CUDA/12.5.0 && $(NVCC) $< $(LIB_FOLDER)/spmv_kernels.cu $(LIB_OBJECTS) -o $@ $(NV_OPT)"
+endif
 
 # Profile-guided optimization (PGO) support
 pgo-generate:
@@ -146,6 +174,10 @@ help:
 	@echo "  debug         - Build with debug flags (-g -O0)"
 	@echo "  release       - Build with optimization flags (-O3 -march=native)"
 	@echo "  profile       - Build with profiling support"
+	@echo "  local         - Build locally on Arch Linux (no module loading)"
+	@echo "  local-debug   - Build locally with debug flags"
+	@echo "  local-release - Build locally with release flags"
+	@echo "  local-profile - Build locally with profile flags"
 	@echo "  perf          - Build with maximum performance optimizations"
 	@echo "  pgo-generate  - Build with profile generation for PGO"
 	@echo "  pgo-use       - Build using generated profiles for PGO"
@@ -162,4 +194,4 @@ help:
 	@echo "  make BUILD_TYPE=profile"
 
 # Declare phony targets
-.PHONY: all debug release profile perf pgo-generate pgo-use benchmark directories clean clean-debug clean-profile clean-release install help
+.PHONY: all debug release profile local local-debug local-release local-profile perf pgo-generate pgo-use benchmark directories clean clean-debug clean-profile clean-release install help

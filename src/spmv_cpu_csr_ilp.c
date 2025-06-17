@@ -112,17 +112,8 @@ int main(int argc, char ** argv) {
 
     double avg_time = total_time / NUM_RUNS;
     
-    // Calculate bandwidth and computation metrics
-    size_t bytes_read = (size_t)nnz * (sizeof(dtype) + sizeof(int)) +    // values and col indices
-                        (size_t)(n + 1) * sizeof(int) +                  // row pointers
-                        (size_t)nnz * sizeof(dtype);                     // vector reads (worst case, one vec element per nnz)
-    
-    size_t bytes_written = (size_t)n * sizeof(dtype);                    // result vector
-    size_t total_bytes = bytes_read + bytes_written;
-
-    double bandwidth = total_bytes / (avg_time * 1.0e9);  // GB/s
-    double flops = 2.0 * nnz;  // Each non-zero element requires a multiply and add
-    double gflops = flops / (avg_time * 1.0e9);  // GFLOPS
+    double bandwidth, gflops;
+    calculate_bandwidth(n,m,nnz,csr_data.col_indices, avg_time, &bandwidth, &gflops);
 
     print_spmv_performance(
         "CSR", 

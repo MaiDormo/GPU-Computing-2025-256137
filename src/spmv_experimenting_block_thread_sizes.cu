@@ -149,33 +149,9 @@ int main(int argc, char ** argv) {
     }
     dtype avg_time = total_time / NUM_RUNS;
 
-    // Calculate effective memory access more accurately
-    size_t bytes_read_vals_cols = (size_t)nnz * (sizeof(dtype) + sizeof(int)); // values and col indices
-    size_t bytes_read_row_ptr = (size_t)(n + 1) * sizeof(int);                // row pointers
-
-    // Count unique column indices
-    int* unique_cols = (int*)calloc(m, sizeof(int));
-    size_t unique_count = 0;
-    for (int i = 0; i < nnz; i++) {
-        if (unique_cols[h_csr.col_indices[i]] == 0) {
-            unique_cols[h_csr.col_indices[i]] = 1;
-            unique_count++;
-        }
-    }
-    free(unique_cols);
-
-    // Use the actual count of unique elements
-    size_t bytes_read_vec = unique_count * sizeof(dtype);
-
-    // Total bytes read and written
-    size_t bytes_read = bytes_read_vals_cols + bytes_read_row_ptr + bytes_read_vec;
-    size_t bytes_written = (size_t)n * sizeof(dtype);                 // result vector
-    size_t total_bytes = bytes_read + bytes_written;
-
-    double bandwidth = total_bytes / (avg_time * 1.0e9);  // GB/s
-    double flops = 2.0 * nnz;  // Each non-zero requires multiply and add
-    double gflops = flops / (avg_time * 1.0e9);  // GFLOPS
-
+    double bandwidth, gflops;
+    calculate_bandwidth(n,m,nnz,h_csr.col_indices, avg_time, &bandwidth, &gflops);
+    
     // --- Print Results ---
     print_spmv_performance(
         "CSR", 
