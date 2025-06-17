@@ -42,20 +42,30 @@ __global__ void vector_csr(const dtype *csr_values, const int *csr_row_ptr,
                           dtype *res, int n);
 
 /**
- * Optimized vector-based CSR SpMV kernel with unrolled reduction
- * Each warp processes one row
- */
-__global__ void vector_csr_unrolled(const dtype *csr_values, const int *csr_row_ptr, 
-                                  const int *csr_col_indices, const dtype *vec, 
-                                  dtype *res, int n);
-
-/**
  * Adaptive CSR SpMV kernel that handles both dense and sparse rows efficiently
  * Uses either a warp per row or an entire block per row depending on density
  */
 __global__ void adaptive_csr(const dtype *csr_values, const int *csr_row_ptr,
                            const int *csr_col_indices, const dtype *vec,
                            dtype *res, const int *row_blocks, int n);
+
+/**
+ * @brief Double-buffered vector CSR kernel
+ */
+__global__ void vector_csr_double_buffer(const dtype *csr_values, const int *csr_row_ptr, 
+                                        const int *csr_col_indices, const dtype *vec, 
+                                        dtype *res, int n);
+
+/**
+ * @brief Vector CSR with shared memory caching
+ */
+__global__ void vector_csr_shared_cache(const dtype *csr_values, const int *csr_row_ptr, 
+                                       const int *csr_col_indices, const dtype *vec, 
+                                       dtype *res, int n);
+
+__global__ void value_parallel_blocked_spmv_v3(const dtype *csr_values, const int *csr_row_ptr, 
+    const int *csr_col_indices, const dtype *vec,
+    dtype *res, int nnz, int num_rows, int stride);
 
 
 #endif // SPMV_KERNELS_H

@@ -3,22 +3,20 @@
 #include <string.h>
 #include <time.h>
 #include <sys/time.h>
-#include <cusparse.h>
 
 #include "../include/read_file_lib.h"
 #include "../include/spmv_type.h"
 #include "../include/csr_conversion.h"
 #include "../include/spmv_utils.h"
+#include "../include/spmv_kernels.h"
 
 // --- Main Function ---
-int main(int argc, char ** argv) {
+int main(int argc, char ** argv) { 
+    
     if (argc != 2) {
-        printf("Usage: <./bin/spmv_gpu_cusparse_csr> <path/to/file.mtx>\n");
+        printf("Usage: <./bin/spmv_*> <path/to/file.mtx>\n");
         return -1;
     }
-
-    const dtype alpha = 1.0f;
-    const dtype beta = 0.0f;
 
     // --- Host Data Structures ---
     struct COO h_coo;
@@ -49,7 +47,7 @@ int main(int argc, char ** argv) {
     }
 
     // --- Initialize Host Vectors ---
-    for (int i = 0; i < m; i++) h_vec[i] = 1.0f;
+    for (int i = 0; i < m; i++) h_vec[i] = 1.0;
     memset(h_res, 0, n * sizeof(dtype));
 
     // --- Convert COO to CSR ---
@@ -88,34 +86,41 @@ int main(int argc, char ** argv) {
     cudaMemcpy(d_csr.col_indices, h_csr.col_indices, nnz * sizeof(int), cudaMemcpyHostToDevice);
     cudaMemcpy(d_csr.row_pointers, h_csr.row_pointers, (n + 1) * sizeof(int), cudaMemcpyHostToDevice);
 
-    // --- Initialize cuSPARSE ---
-    cusparseHandle_t handle;
-    cusparseCreate(&handle);
+    // --- Adaptive Block Size Selection ---
+    int adaptive_block_size;
+    double avg_nnz_per_row = (double)nnz / n;
+    int device;
+    cudaGetDevice(&device);
+    cudaDeviceProp prop;
+    cudaGetDeviceProperties(&prop, device);
 
-    // Create matrix/vector descriptors using the new generic API
-    cusparseSpMatDescr_t matA;
-    cusparseDnVecDescr_t vecX, vecY;
-    void* dBuffer = NULL;
-    size_t bufferSize = 0;
+    // For extremely sparse matrices (< 2 NNZ per row)
+    if (avg_nnz_per_row < 2.0) {
+        adaptive_block_size = 128;  // Smaller blocks for better occupancy with sparse data
+    } else if (avg_nnz_per_row < 8.0) {
+        adaptive_block_size = 256;  // Medium sparse
+    } else if (avg_nnz_per_row < 32.0) {
+        adaptive_block_size = 512;  // Medium dense
+    } else {
+        adaptive_block_size = 1024; // Dense matrices
+    }
 
-    // Create sparse matrix A in CSR format
-    cusparseCreateCsr(&matA, n, m, nnz,
-                    d_csr.row_pointers, d_csr.col_indices, d_csr.values,
-                    CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
-                    CUSPARSE_INDEX_BASE_ZERO, CUDA_R_32F);
+    // Ensure it's a multiple of warp size and within device limits
+    adaptive_block_size = ((adaptive_block_size + 31) / 32) * 32;
+    if (adaptive_block_size > prop.maxThreadsPerBlock) {
+        adaptive_block_size = prop.maxThreadsPerBlock;
+    }
 
-    // Create dense vector X
-    cusparseCreateDnVec(&vecX, m, d_vec, CUDA_R_32F);
+    printf("Matrix analysis: %.2f avg NNZ per row\n", avg_nnz_per_row);
+    printf("Selected adaptive block size: %d (was %d)\n", adaptive_block_size, BLOCK_SIZE);
 
-    // Create dense vector Y
-    cusparseCreateDnVec(&vecY, n, d_res, CUDA_R_32F);
+    // --- Updated Kernel Launch Configuration ---
+    const int elements_per_thread = 8;
+    const int total_threads_needed = (nnz + elements_per_thread - 1) / elements_per_thread;
+    const int block_num = (total_threads_needed + adaptive_block_size - 1) / adaptive_block_size;
 
-    // Allocate an external buffer if needed
-    cusparseSpMV_bufferSize(
-        handle, CUSPARSE_OPERATION_NON_TRANSPOSE,
-        &alpha, matA, vecX, &beta, vecY, CUDA_R_32F,
-        CUSPARSE_SPMV_ALG_DEFAULT, &bufferSize);
-    cudaMalloc(&dBuffer, bufferSize);
+    printf("Launch configuration: %d blocks, %d threads per block\n", block_num, adaptive_block_size);
+    printf("Elements per thread: %d, Total threads needed: %d\n", elements_per_thread, total_threads_needed);
 
     // --- Timing Setup ---
     const int NUM_RUNS = 50;
@@ -126,19 +131,22 @@ int main(int argc, char ** argv) {
     cudaEventCreate(&end);
 
     // --- Warmup Run ---
-    cusparseSpMV(handle, CUSPARSE_OPERATION_NON_TRANSPOSE,
-        &alpha, matA, vecX, &beta, vecY, CUDA_R_32F,
-        CUSPARSE_SPMV_ALG_DEFAULT, dBuffer);
+    value_parallel_blocked_spmv_v3<<<block_num, adaptive_block_size>>>(
+        d_csr.values, d_csr.row_pointers, d_csr.col_indices, d_vec, d_res, d_csr.num_non_zeros, n, elements_per_thread
+    );
     
     cudaDeviceSynchronize();
     
     // --- Timed Runs ---
     for (int run = 0; run < NUM_RUNS; run++) {
+        // Reset result vector before each run
+        cudaMemset(d_res, 0, n * sizeof(dtype));
+
         cudaEventRecord(start);
 
-        cusparseSpMV(handle, CUSPARSE_OPERATION_NON_TRANSPOSE,
-            &alpha, matA, vecX, &beta, vecY, CUDA_R_32F,
-            CUSPARSE_SPMV_ALG_DEFAULT, dBuffer);
+        value_parallel_blocked_spmv_v3<<<block_num, adaptive_block_size>>>(
+            d_csr.values, d_csr.row_pointers, d_csr.col_indices, d_vec, d_res, d_csr.num_non_zeros, n, elements_per_thread
+        );
             
         cudaEventRecord(end);
         cudaEventSynchronize(end);
@@ -160,61 +168,36 @@ int main(int argc, char ** argv) {
     }
     dtype avg_time = total_time / NUM_RUNS;
 
-    // Calculate memory bandwidth more accurately for SpMV
-    // For CSR SpMV, memory access pattern is:
-    // 1. Read all row_pointers (accessed sequentially)
-    // 2. Read all values and col_indices (accessed sequentially) 
-    // 3. Read vector elements (random access pattern)
-    // 4. Write result vector (sequential)
+    // Calculate effective memory access more accurately
+    size_t bytes_read_vals_cols = (size_t)nnz * (sizeof(dtype) + sizeof(int)); // values and col indices
+    size_t bytes_read_row_ptr = (size_t)(n + 1) * sizeof(int);                // row pointers
 
-    size_t bytes_read_vals = (size_t)nnz * sizeof(dtype);           // matrix values
-    size_t bytes_read_cols = (size_t)nnz * sizeof(int);            // column indices  
-    size_t bytes_read_row_ptr = (size_t)(n + 1) * sizeof(int);     // row pointers
-    
-    // For vector reads, each column index causes a vector element read
-    // This is more accurate than counting unique columns because:
-    // 1. Cache misses depend on access pattern, not just unique elements
-    // 2. cuSPARSE may not optimize for reused vector elements
-    size_t bytes_read_vec = (size_t)nnz * sizeof(dtype);           // vector reads (one per nnz)
-    
-    size_t bytes_written = (size_t)n * sizeof(dtype);              // result vector
-    
-    // Total memory traffic
-    size_t total_bytes = bytes_read_vals + bytes_read_cols + 
-                        bytes_read_row_ptr + bytes_read_vec + bytes_written;
+    // Count unique column indices
+    int* unique_cols = (int*)calloc(m, sizeof(int));
+    size_t unique_count = 0;
+    for (int i = 0; i < nnz; i++) {
+        if (unique_cols[h_csr.col_indices[i]] == 0) {
+            unique_cols[h_csr.col_indices[i]] = 1;
+            unique_count++;
+        }
+    }
+    free(unique_cols);
 
-    // Memory bandwidth calculation
+    // Use the actual count of unique elements
+    size_t bytes_read_vec = unique_count * sizeof(dtype);
+
+    // Total bytes read and written
+    size_t bytes_read = bytes_read_vals_cols + bytes_read_row_ptr + bytes_read_vec;
+    size_t bytes_written = (size_t)n * sizeof(dtype);                 // result vector
+    size_t total_bytes = bytes_read + bytes_written;
+
     double bandwidth = total_bytes / (avg_time * 1.0e9);  // GB/s
-    
-    // Computational intensity
-    double flops = 2.0 * nnz;  // Each non-zero: 1 multiply + 1 add
+    double flops = 2.0 * nnz;  // Each non-zero requires multiply and add
     double gflops = flops / (avg_time * 1.0e9);  // GFLOPS
-    
-    // Calculate arithmetic intensity for roofline analysis
-    double arithmetic_intensity = flops / (double)total_bytes;  // FLOPS/Byte
 
-    // --- Print Matrix Statistics ---
-    print_matrix_stats(&h_csr);
-
-    // --- Print Results with Additional Metrics ---
-    printf("\n=== cuSPARSE Performance Results ===\n");
-    printf("Matrix: %s\n", argv[1]);
-    printf("Dimensions: %d x %d, NNZ: %d\n", n, m, nnz);
-    printf("Average time: %.6f seconds\n", avg_time);
-    printf("Memory bandwidth: %.2f GB/s\n", bandwidth);
-    printf("Compute performance: %.2f GFLOPS\n", gflops);
-    printf("Arithmetic intensity: %.3f FLOPS/Byte\n", arithmetic_intensity);
-    printf("Memory breakdown:\n");
-    printf("  Matrix values: %.2f MB\n", bytes_read_vals / (1024.0 * 1024.0));
-    printf("  Column indices: %.2f MB\n", bytes_read_cols / (1024.0 * 1024.0));
-    printf("  Row pointers: %.2f MB\n", bytes_read_row_ptr / (1024.0 * 1024.0));
-    printf("  Vector reads: %.2f MB\n", bytes_read_vec / (1024.0 * 1024.0));
-    printf("  Result writes: %.2f MB\n", bytes_written / (1024.0 * 1024.0));
-    printf("  Total memory: %.2f MB\n", total_bytes / (1024.0 * 1024.0));
-
-    // Also call the standard print function for consistency
+    // --- Print Results ---
     print_spmv_performance(
-        "cuSPARSE CSR", 
+        "Value Parallel Blocked v3 (Hash Table)", 
         argv[1],
         n, 
         m, 
@@ -225,13 +208,6 @@ int main(int argc, char ** argv) {
         h_res,
         10  // Print up to 10 samples
     );
-
-    // --- Cleanup cuSPARSE ---
-    cusparseDestroySpMat(matA);
-    cusparseDestroyDnVec(vecX);
-    cusparseDestroyDnVec(vecY);
-    if (dBuffer) cudaFree(dBuffer);
-    cusparseDestroy(handle);
 
     // --- Cleanup ---
     cudaFree(d_vec);

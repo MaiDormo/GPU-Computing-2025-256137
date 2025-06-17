@@ -3,22 +3,98 @@
 #include <string.h>
 #include <time.h>
 #include <sys/time.h>
-#include <cusparse.h>
 
 #include "../include/read_file_lib.h"
 #include "../include/spmv_type.h"
 #include "../include/csr_conversion.h"
 #include "../include/spmv_utils.h"
+#include "../include/spmv_kernels.h"
 
-// --- Main Function ---
-int main(int argc, char ** argv) {
-    if (argc != 2) {
-        printf("Usage: <./bin/spmv_gpu_cusparse_csr> <path/to/file.mtx>\n");
-        return -1;
+#define WARP_SIZE 32
+
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+
+void calculate_advanced_launch_config(const struct CSR *csr,
+                                      int *block_size,
+                                      int *grid_size,
+                                      int *shared_mem_size,
+                                      int *kernel_variant) {
+    struct MAT_STATS stats = calculate_matrix_stats(csr);
+    double avg_nnz = stats.mean_nnz_per_row;
+    double std_nnz = stats.std_dev_nnz_per_row;
+    double cv      = (avg_nnz > 0.0) ? std_nnz / avg_nnz : 0.0;
+
+    // Get device properties first
+    cudaDeviceProp prop;
+    cudaGetDeviceProperties(&prop, 0);
+
+    // ----- Select kernel variant & block size -----
+    if (avg_nnz < 4.0) {
+        *kernel_variant  = 0;
+        *block_size      = 128;
+    } else if (avg_nnz < 16.0) {
+        *kernel_variant  = 2;
+        *block_size      = 256;
+    } else if (avg_nnz < 64.0) {
+        if (cv > 1.0) {
+            *kernel_variant  = 1;
+            *block_size      = 512;
+        } else {
+            *kernel_variant  = 2;
+            *block_size      = 512;
+        }
+    } else {
+        *kernel_variant  = 2;
+        *block_size      = 1024;
     }
 
-    const dtype alpha = 1.0f;
-    const dtype beta = 0.0f;
+    // Enforce device limits on block size
+    *block_size = MIN(*block_size, prop.maxThreadsPerBlock);
+    *block_size = ((*block_size + WARP_SIZE - 1) / WARP_SIZE) * WARP_SIZE;
+
+    // ----- Compute grid size correctly -----
+    int warps_per_block = *block_size / WARP_SIZE;
+    int rows_per_block  = (*kernel_variant == 2) ? warps_per_block * 2
+                                                 : warps_per_block;
+    
+    // Calculate REQUIRED grid size to cover all rows
+    int required_grid_size = (csr->num_rows + rows_per_block - 1) / rows_per_block;
+    
+    // Set reasonable limits based on device capabilities
+    int min_blocks = prop.multiProcessorCount;
+    
+    // Use the required grid size, but enforce minimum for occupancy
+    *grid_size = MAX(required_grid_size, min_blocks);
+
+    *shared_mem_size = (*kernel_variant == 1) ? (512 * sizeof(dtype)) : 0;
+    
+    // Check shared memory limits
+    if (*shared_mem_size > (int)prop.sharedMemPerBlock) {
+        *shared_mem_size = 0;
+        if (*kernel_variant == 1) *kernel_variant = 0;
+    }
+
+    // Verify coverage
+    int total_rows_covered = *grid_size * rows_per_block;
+    printf("Calculated launch config: Grid=%d, Block=%d, SharedMem=%d, Variant=%d\n",
+           *grid_size, *block_size, *shared_mem_size, *kernel_variant);
+    printf("Coverage: %d blocks × %d rows/block = %d total rows (need %d)\n",
+           *grid_size, rows_per_block, total_rows_covered, csr->num_rows);
+    
+    if (total_rows_covered < csr->num_rows) {
+        printf("ERROR: Insufficient grid size! Only covering %d/%d rows (%.1f%%)\n",
+               total_rows_covered, csr->num_rows, 
+               100.0 * total_rows_covered / csr->num_rows);
+    }
+}
+
+int main(int argc, char ** argv) { 
+    
+    if (argc != 2) {
+        printf("Usage: <./bin/spmv_*> <path/to/file.mtx>\n");
+        return -1;
+    }
 
     // --- Host Data Structures ---
     struct COO h_coo;
@@ -49,7 +125,7 @@ int main(int argc, char ** argv) {
     }
 
     // --- Initialize Host Vectors ---
-    for (int i = 0; i < m; i++) h_vec[i] = 1.0f;
+    for (int i = 0; i < m; i++) h_vec[i] = 1.0;
     memset(h_res, 0, n * sizeof(dtype));
 
     // --- Convert COO to CSR ---
@@ -62,10 +138,17 @@ int main(int argc, char ** argv) {
          return -1;
     }
 
+    printf("Finished Conversion from COO to CSR\n");
+
     // Free original COO data (host)
     free(h_coo.a_val); h_coo.a_val = NULL;
     free(h_coo.a_row); h_coo.a_row = NULL;
     free(h_coo.a_col); h_coo.a_col = NULL;
+
+    // --- Calculate Optimal Launch Configuration ---
+    int block_size, grid_size, shared_mem_size, kernel_variant = 0;
+
+    calculate_advanced_launch_config(&h_csr, &block_size, &grid_size, &shared_mem_size, &kernel_variant);
 
     // --- Device Data Structures ---
     struct CSR d_csr; // Holds device pointers
@@ -77,45 +160,24 @@ int main(int argc, char ** argv) {
     cudaMalloc(&d_csr.values, nnz * sizeof(dtype));
     cudaMalloc(&d_csr.col_indices, nnz * sizeof(int));
     cudaMalloc(&d_csr.row_pointers, (n + 1) * sizeof(int));
+    
     d_csr.num_rows = n;
     d_csr.num_cols = m;
     d_csr.num_non_zeros = nnz;
 
+    // Check for allocation errors
+    cudaError_t cuda_err = cudaGetLastError();
+    if (cuda_err != cudaSuccess) {
+        fprintf(stderr, "CUDA memory allocation failed: %s\n", cudaGetErrorString(cuda_err));
+        return -1;
+    }
+
     // --- Copy Data to Device ---
     cudaMemcpy(d_vec, h_vec, m * sizeof(dtype), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_res, h_res, n * sizeof(dtype), cudaMemcpyHostToDevice); // Copy initial zeros
+    cudaMemcpy(d_res, h_res, n * sizeof(dtype), cudaMemcpyHostToDevice);
     cudaMemcpy(d_csr.values, h_csr.values, nnz * sizeof(dtype), cudaMemcpyHostToDevice);
     cudaMemcpy(d_csr.col_indices, h_csr.col_indices, nnz * sizeof(int), cudaMemcpyHostToDevice);
     cudaMemcpy(d_csr.row_pointers, h_csr.row_pointers, (n + 1) * sizeof(int), cudaMemcpyHostToDevice);
-
-    // --- Initialize cuSPARSE ---
-    cusparseHandle_t handle;
-    cusparseCreate(&handle);
-
-    // Create matrix/vector descriptors using the new generic API
-    cusparseSpMatDescr_t matA;
-    cusparseDnVecDescr_t vecX, vecY;
-    void* dBuffer = NULL;
-    size_t bufferSize = 0;
-
-    // Create sparse matrix A in CSR format
-    cusparseCreateCsr(&matA, n, m, nnz,
-                    d_csr.row_pointers, d_csr.col_indices, d_csr.values,
-                    CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
-                    CUSPARSE_INDEX_BASE_ZERO, CUDA_R_32F);
-
-    // Create dense vector X
-    cusparseCreateDnVec(&vecX, m, d_vec, CUDA_R_32F);
-
-    // Create dense vector Y
-    cusparseCreateDnVec(&vecY, n, d_res, CUDA_R_32F);
-
-    // Allocate an external buffer if needed
-    cusparseSpMV_bufferSize(
-        handle, CUSPARSE_OPERATION_NON_TRANSPOSE,
-        &alpha, matA, vecX, &beta, vecY, CUDA_R_32F,
-        CUSPARSE_SPMV_ALG_DEFAULT, &bufferSize);
-    cudaMalloc(&dBuffer, bufferSize);
 
     // --- Timing Setup ---
     const int NUM_RUNS = 50;
@@ -126,22 +188,53 @@ int main(int argc, char ** argv) {
     cudaEventCreate(&end);
 
     // --- Warmup Run ---
-    cusparseSpMV(handle, CUSPARSE_OPERATION_NON_TRANSPOSE,
-        &alpha, matA, vecX, &beta, vecY, CUDA_R_32F,
-        CUSPARSE_SPMV_ALG_DEFAULT, dBuffer);
-    
+    vector_csr<<<grid_size, block_size>>>(
+        d_csr.values, d_csr.row_pointers, d_csr.col_indices, d_vec, d_res, n
+    );
     cudaDeviceSynchronize();
     
+    printf("Launch config: Grid=%d, Block=%d, SharedMem=%d, Variant=%d\n", 
+           grid_size, block_size, shared_mem_size, kernel_variant);
+
+    cudaError_t err;
     // --- Timed Runs ---
     for (int run = 0; run < NUM_RUNS; run++) {
-        cudaEventRecord(start);
 
-        cusparseSpMV(handle, CUSPARSE_OPERATION_NON_TRANSPOSE,
-            &alpha, matA, vecX, &beta, vecY, CUDA_R_32F,
-            CUSPARSE_SPMV_ALG_DEFAULT, dBuffer);
+        // Reset result vector before each run to ensure correctness
+        cudaMemset(d_res, 0, n * sizeof(dtype));
+
+        switch (kernel_variant) {
+            // case 1:
+            //     cudaEventRecord(start);
+            //     vector_csr_shared_cache<<<grid_size,block_size,shared_mem_size>>>(
+            //         d_csr.values, d_csr.row_pointers, d_csr.col_indices, d_vec, d_res, n
+            //     );
+            //     cudaEventRecord(end);
+            //     cudaEventSynchronize(end);
+            //     break;
+            case 2:
+                cudaEventRecord(start);
+                vector_csr_double_buffer<<<grid_size,block_size>>>(
+                    d_csr.values, d_csr.row_pointers, d_csr.col_indices, d_vec, d_res, n
+                );
+                cudaEventRecord(end);
+                cudaEventSynchronize(end);
+                break;
             
-        cudaEventRecord(end);
-        cudaEventSynchronize(end);
+            default:
+                cudaEventRecord(start);
+                vector_csr<<<grid_size,block_size>>>(
+                    d_csr.values, d_csr.row_pointers, d_csr.col_indices, d_vec, d_res, n
+                );
+                cudaEventRecord(end);
+                cudaEventSynchronize(end);
+        }
+
+        err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            fprintf(stderr, "Kernel launch failed: %s\n", cudaGetErrorString(err));
+            return -1;
+        }
 
         float millisec = 0.0;
         cudaEventElapsedTime(&millisec, start, end);
@@ -164,7 +257,7 @@ int main(int argc, char ** argv) {
     // For CSR SpMV, memory access pattern is:
     // 1. Read all row_pointers (accessed sequentially)
     // 2. Read all values and col_indices (accessed sequentially) 
-    // 3. Read vector elements (random access pattern)
+    // 3. Read vector elements (potentially random access pattern)
     // 4. Write result vector (sequential)
 
     size_t bytes_read_vals = (size_t)nnz * sizeof(dtype);           // matrix values
@@ -172,9 +265,8 @@ int main(int argc, char ** argv) {
     size_t bytes_read_row_ptr = (size_t)(n + 1) * sizeof(int);     // row pointers
     
     // For vector reads, each column index causes a vector element read
-    // This is more accurate than counting unique columns because:
-    // 1. Cache misses depend on access pattern, not just unique elements
-    // 2. cuSPARSE may not optimize for reused vector elements
+    // This gives a more realistic bandwidth estimate for custom kernels
+    // that may not have sophisticated caching mechanisms
     size_t bytes_read_vec = (size_t)nnz * sizeof(dtype);           // vector reads (one per nnz)
     
     size_t bytes_written = (size_t)n * sizeof(dtype);              // result vector
@@ -197,13 +289,14 @@ int main(int argc, char ** argv) {
     print_matrix_stats(&h_csr);
 
     // --- Print Results with Additional Metrics ---
-    printf("\n=== cuSPARSE Performance Results ===\n");
+    printf("\n=== Vector CSR Performance Results ===\n");
     printf("Matrix: %s\n", argv[1]);
     printf("Dimensions: %d x %d, NNZ: %d\n", n, m, nnz);
     printf("Average time: %.6f seconds\n", avg_time);
     printf("Memory bandwidth: %.2f GB/s\n", bandwidth);
     printf("Compute performance: %.2f GFLOPS\n", gflops);
     printf("Arithmetic intensity: %.3f FLOPS/Byte\n", arithmetic_intensity);
+    printf("Kernel variant used: %d\n", kernel_variant);
     printf("Memory breakdown:\n");
     printf("  Matrix values: %.2f MB\n", bytes_read_vals / (1024.0 * 1024.0));
     printf("  Column indices: %.2f MB\n", bytes_read_cols / (1024.0 * 1024.0));
@@ -214,7 +307,7 @@ int main(int argc, char ** argv) {
 
     // Also call the standard print function for consistency
     print_spmv_performance(
-        "cuSPARSE CSR", 
+        "Vector CSR", 
         argv[1],
         n, 
         m, 
@@ -225,13 +318,6 @@ int main(int argc, char ** argv) {
         h_res,
         10  // Print up to 10 samples
     );
-
-    // --- Cleanup cuSPARSE ---
-    cusparseDestroySpMat(matA);
-    cusparseDestroyDnVec(vecX);
-    cusparseDestroyDnVec(vecY);
-    if (dBuffer) cudaFree(dBuffer);
-    cusparseDestroy(handle);
 
     // --- Cleanup ---
     cudaFree(d_vec);

@@ -8,17 +8,13 @@ extern "C" {
 #endif
 
 /**
- * Converts a matrix from COO format to CSR format
+ * Converts a matrix from COO format to CSR format (CPU implementation)
  *
  * @param coo_data Input matrix in COO format
  * @param csr_data Output matrix in CSR format (pre-allocated)
  * @return 0 on success, -1 on error
  */
 int coo_to_csr(const struct COO *coo_data, struct CSR *csr_data);
-
-int coo_to_csr_padding(const struct COO *coo_data, struct CSR *csr_data);
-
-int coo_to_csr_reordered(const struct COO *coo_data, struct CSR *csr_data);
 
 #ifdef __cplusplus
 }

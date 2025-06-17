@@ -133,36 +133,61 @@ int main(int argc, char ** argv) {
     }
     dtype avg_time = total_time / NUM_RUNS;
 
-    // Calculate effective memory access more accurately
-    size_t bytes_read_vals_cols = (size_t)nnz * (sizeof(dtype) + sizeof(int)); // values and col indices
-    size_t bytes_read_row_ptr = (size_t)(n + 1) * sizeof(int);                // row pointers
+    // Calculate memory bandwidth more accurately for SpMV
+    // For CSR SpMV, memory access pattern is:
+    // 1. Read all row_pointers (accessed sequentially)
+    // 2. Read all values and col_indices (accessed sequentially) 
+    // 3. Read vector elements (potentially random access pattern)
+    // 4. Write result vector (sequential)
 
-    // Count unique column indices
-    int* unique_cols = (int*)calloc(m, sizeof(int));
-    size_t unique_count = 0;
-    for (int i = 0; i < nnz; i++) {
-        if (unique_cols[h_csr.col_indices[i]] == 0) {
-            unique_cols[h_csr.col_indices[i]] = 1;
-            unique_count++;
-        }
-    }
-    free(unique_cols);
+    size_t bytes_read_vals = (size_t)nnz * sizeof(dtype);           // matrix values
+    size_t bytes_read_cols = (size_t)nnz * sizeof(int);            // column indices  
+    size_t bytes_read_row_ptr = (size_t)(n + 1) * sizeof(int);     // row pointers
+    
+    // For vector reads, each column index causes a vector element read
+    // This is more accurate than counting unique columns because:
+    // 1. Cache misses depend on access pattern, not just unique elements
+    // 2. Simple CSR kernel may not optimize for reused vector elements
+    size_t bytes_read_vec = (size_t)nnz * sizeof(dtype);           // vector reads (one per nnz)
+    
+    size_t bytes_written = (size_t)n * sizeof(dtype);              // result vector
+    
+    // Total memory traffic
+    size_t total_bytes = bytes_read_vals + bytes_read_cols + 
+                        bytes_read_row_ptr + bytes_read_vec + bytes_written;
 
-    // Use the actual count of unique elements
-    size_t bytes_read_vec = unique_count * sizeof(dtype);
-
-    // Total bytes read and written
-    size_t bytes_read = bytes_read_vals_cols + bytes_read_row_ptr + bytes_read_vec;
-    size_t bytes_written = (size_t)n * sizeof(dtype);                 // result vector
-    size_t total_bytes = bytes_read + bytes_written;
-
+    // Memory bandwidth calculation
     double bandwidth = total_bytes / (avg_time * 1.0e9);  // GB/s
-    double flops = 2.0 * nnz;  // Each non-zero requires multiply and add
+    
+    // Computational intensity
+    double flops = 2.0 * nnz;  // Each non-zero: 1 multiply + 1 add
     double gflops = flops / (avg_time * 1.0e9);  // GFLOPS
+    
+    // Calculate arithmetic intensity for roofline analysis
+    double arithmetic_intensity = flops / (double)total_bytes;  // FLOPS/Byte
 
-    // --- Print Results ---
+    // --- Print Matrix Statistics ---
+    print_matrix_stats(&h_csr);
+
+    // --- Print Results with Additional Metrics ---
+    printf("\n=== Simple CSR Performance Results ===\n");
+    printf("Matrix: %s\n", argv[1]);
+    printf("Dimensions: %d x %d, NNZ: %d\n", n, m, nnz);
+    printf("Average time: %.6f seconds\n", avg_time);
+    printf("Memory bandwidth: %.2f GB/s\n", bandwidth);
+    printf("Compute performance: %.2f GFLOPS\n", gflops);
+    printf("Arithmetic intensity: %.3f FLOPS/Byte\n", arithmetic_intensity);
+    printf("Memory breakdown:\n");
+    printf("  Matrix values: %.2f MB\n", bytes_read_vals / (1024.0 * 1024.0));
+    printf("  Column indices: %.2f MB\n", bytes_read_cols / (1024.0 * 1024.0));
+    printf("  Row pointers: %.2f MB\n", bytes_read_row_ptr / (1024.0 * 1024.0));
+    printf("  Vector reads: %.2f MB\n", bytes_read_vec / (1024.0 * 1024.0));
+    printf("  Result writes: %.2f MB\n", bytes_written / (1024.0 * 1024.0));
+    printf("  Total memory: %.2f MB\n", total_bytes / (1024.0 * 1024.0));
+
+    // Also call the standard print function for consistency
     print_spmv_performance(
-        "CSR", 
+        "Simple CSR", 
         argv[1],
         n, 
         m, 
@@ -186,7 +211,6 @@ int main(int argc, char ** argv) {
     free(h_csr.values);
     free(h_csr.col_indices);
     free(h_csr.row_pointers);
-
 
     return 0;
 }

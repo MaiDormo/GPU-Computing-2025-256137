@@ -6,7 +6,7 @@ if [ $# -eq 0 ]; then
   exit 1
 fi
 
-module load CUDA/12.3.2
+module load CUDA/12.5.0
 
 filename=$(basename -- "$1")
 name="${filename%.*}"

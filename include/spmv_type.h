@@ -32,6 +32,7 @@ struct MAT_STATS {
     int max_nnz_per_row;
     int median_nnz_per_row;
     double sparsity_ratio;
+    int empty_rows;
     int total_nnz;
 };
 

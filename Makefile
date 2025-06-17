@@ -15,11 +15,28 @@ DEBUG_NV_OPT := $(BASE_NV_OPT) -g -G -O0 -DDEBUG --device-debug
 
 # Release flags with performance optimizations
 RELEASE_OPT := $(BASE_OPT) -O3 -DNDEBUG -march=native -funroll-loops -flto
-RELEASE_NV_OPT := $(BASE_NV_OPT) -O3 --gpu-architecture=sm_80 -DNDEBUG --use_fast_math -Xptxas -O3
+# Release flags with performance optimizations
+RELEASE_NV_OPT := $(BASE_NV_OPT) -O3 --gpu-architecture=sm_80 -DNDEBUG --use_fast_math -Xptxas -O3 \
+					--maxrregcount=255 \
+					--ptxas-options=--warn-on-spills,--optimize-float-atomics \
+					-Xcompiler "-Ofast -march=native -mtune=native -funroll-loops -ffast-math -fopenmp -DNDEBUG" \
+					-Xptxas -O3,--def-load-cache=ca,--def-store-cache=wb \
+					--relocatable-device-code=false \
+					--restrict \
+					--extended-lambda \
+					--fmad=true
 
 # Profile flags for performance analysis
 PROFILE_OPT := $(BASE_OPT) -O3 -g -DNDEBUG -march=native -funroll-loops
-PROFILE_NV_OPT := $(BASE_NV_OPT) -O3 --gpu-architecture=sm_80 -DNDEBUG -lineinfo -g
+PROFILE_NV_OPT := $(BASE_NV_OPT) -O3 --gpu-architecture=sm_80 -DNDEBUG -lineinfo -g \
+					--maxrregcount=255 \
+					--ptxas-options=--warn-on-spills,--optimize-float-atomics \
+					-Xcompiler "-Ofast -march=native -mtune=native -funroll-loops -ffast-math -fopenmp" \
+					-Xptxas -O3,--def-load-cache=ca,--def-store-cache=wb \
+					--relocatable-device-code=false \
+					--restrict \
+					--extended-lambda \
+					--fmad=true
 
 # Set flags based on build type
 ifeq ($(BUILD_TYPE),debug)
@@ -90,7 +107,7 @@ $(OBJ_FOLDER)/%.o: $(LIB_FOLDER)/%.c
 $(BIN_FOLDER)/%.exec: $(SRC_FOLDER)/%.cu $(LIB_OBJECTS)
 	@mkdir -p $(BIN_FOLDER)
 	@echo "Building CUDA $@ with $(BUILD_TYPE) configuration..."
-	@bash -c "source /etc/profile.d/modules.sh && module load CUDA/12.3.2 && $(NVCC) $< $(LIB_FOLDER)/spmv_kernels.cu $(LIB_OBJECTS) -o $@ $(NV_OPT)"
+	@bash -c "source /etc/profile.d/modules.sh && module load CUDA/12.5.0 && $(NVCC) $< $(LIB_FOLDER)/spmv_kernels.cu $(LIB_OBJECTS) -o $@ $(NV_OPT)"
 
 # Profile-guided optimization (PGO) support
 pgo-generate:

@@ -10,6 +10,8 @@
 #include "../include/spmv_utils.h"
 #include "../include/spmv_kernels.h"
 
+#define WARP_SIZE 32
+
 // --- Main Function ---
 int main(int argc, char ** argv) { 
     
@@ -72,7 +74,7 @@ int main(int argc, char ** argv) {
     struct MAT_STATS stats = calculate_matrix_stats(&h_csr);
     printf("Matrix analysis: mean_nnz_per_row = %.2f\n", stats.mean_nnz_per_row);
     
-    
+    // Determine block size based on matrix density
     if (stats.mean_nnz_per_row < 16) {
         optimal_block_size = 128;  // Very sparse matrices - smaller blocks
     } else if (stats.mean_nnz_per_row < 32) {
@@ -83,26 +85,45 @@ int main(int argc, char ** argv) {
         optimal_block_size = 1024; // Dense matrices - larger blocks for better occupancy
     }
 
-    // Check device shared memory limits and adjust if necessary
+    // Check device limits and adjust if necessary
     int device;
     cudaGetDevice(&device);
     cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop, device);
     
-    // Vector CSR doesn't use explicit shared memory, but ensure block size is reasonable
     if (optimal_block_size > prop.maxThreadsPerBlock) {
         printf("Warning: Optimal block size (%d) exceeds device limit (%d)\n", 
                optimal_block_size, prop.maxThreadsPerBlock);
         optimal_block_size = prop.maxThreadsPerBlock;
     }
 
-    // Calculate grid size based on optimal block size
-    const int warps_per_block = optimal_block_size / WARP_SIZE;
-    const int rows_per_block = warps_per_block;  // One warp per row
-    const int optimal_block_num = (n + rows_per_block - 1) / rows_per_block;
+    // Ensure block size is a multiple of warp size
+    optimal_block_size = ((optimal_block_size + WARP_SIZE - 1) / WARP_SIZE) * WARP_SIZE;
 
-    printf("Optimal launch config: %d blocks, %d threads per block (warps per block: %d)\n",
-           optimal_block_num, optimal_block_size, warps_per_block);
+    // Calculate launch configuration for vector CSR double buffer kernel
+    int warps_per_block = optimal_block_size / WARP_SIZE;
+    int rows_per_block = warps_per_block * 2;  // 2 rows per warp in double buffer kernel
+    int optimal_block_num = (n + rows_per_block - 1) / rows_per_block;
+
+
+    // Ensure minimum occupancy
+    // int min_blocks = prop.multiProcessorCount;
+    // if (optimal_block_num < min_blocks) {
+    //     optimal_block_num = min_blocks;
+    // }
+
+    // // Cap maximum blocks to avoid overhead
+    // int max_blocks = prop.multiProcessorCount * 8;
+    // if (optimal_block_num > max_blocks) {
+    //     optimal_block_num = max_blocks;
+    // }
+
+    printf("Device properties: %d SMs, %d max threads per block\n", 
+           prop.multiProcessorCount, prop.maxThreadsPerBlock);
+    printf("Calculated launch config:\n");
+    printf("  Block size: %d threads (%d warps)\n", optimal_block_size, warps_per_block);
+    printf("  Grid size: %d blocks\n", optimal_block_num);
+    printf("  Rows per block: %d (2 rows per warp)\n", rows_per_block);
 
     // --- Device Data Structures ---
     struct CSR d_csr; // Holds device pointers
@@ -114,13 +135,21 @@ int main(int argc, char ** argv) {
     cudaMalloc(&d_csr.values, h_csr.num_non_zeros * sizeof(dtype));
     cudaMalloc(&d_csr.col_indices, h_csr.num_non_zeros * sizeof(int));
     cudaMalloc(&d_csr.row_pointers, (n + 1) * sizeof(int));
+    
     d_csr.num_rows = n;
     d_csr.num_cols = m;
     d_csr.num_non_zeros = h_csr.num_non_zeros;
 
+    // Check for CUDA errors
+    cudaError_t cuda_err = cudaGetLastError();
+    if (cuda_err != cudaSuccess) {
+        fprintf(stderr, "CUDA memory allocation failed: %s\n", cudaGetErrorString(cuda_err));
+        return -1;
+    }
+
     // --- Copy Data to Device ---
     cudaMemcpy(d_vec, h_vec, m * sizeof(dtype), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_res, h_res, n * sizeof(dtype), cudaMemcpyHostToDevice); // Copy initial zeros
+    cudaMemcpy(d_res, h_res, n * sizeof(dtype), cudaMemcpyHostToDevice);
     cudaMemcpy(d_csr.values, h_csr.values, h_csr.num_non_zeros * sizeof(dtype), cudaMemcpyHostToDevice);
     cudaMemcpy(d_csr.col_indices, h_csr.col_indices, h_csr.num_non_zeros * sizeof(int), cudaMemcpyHostToDevice);
     cudaMemcpy(d_csr.row_pointers, h_csr.row_pointers, (n + 1) * sizeof(int), cudaMemcpyHostToDevice);
@@ -134,22 +163,42 @@ int main(int argc, char ** argv) {
     cudaEventCreate(&end);
 
     // --- Warmup Run ---
-    vector_csr<<<optimal_block_num, optimal_block_size>>>(
+    vector_csr_double_buffer<<<optimal_block_num, optimal_block_size>>>(
         d_csr.values, d_csr.row_pointers, d_csr.col_indices, d_vec, d_res, n
     );
     
     cudaDeviceSynchronize();
     
+    // Check for kernel launch errors
+    cuda_err = cudaGetLastError();
+    if (cuda_err != cudaSuccess) {
+        fprintf(stderr, "Kernel launch failed: %s\n", cudaGetErrorString(cuda_err));
+        return -1;
+    }
+    
     // --- Timed Runs ---
     for (int run = 0; run < NUM_RUNS; run++) {
+        // Reset result vector to ensure correctness
+        // cudaMemset(d_res, 0, n * sizeof(dtype));
+        
+        // Add synchronization before starting timing
+        cudaDeviceSynchronize();
+
         cudaEventRecord(start);
 
-        vector_csr<<<optimal_block_num, optimal_block_size>>>(
+        vector_csr_double_buffer<<<optimal_block_num, optimal_block_size>>>(
             d_csr.values, d_csr.row_pointers, d_csr.col_indices, d_vec, d_res, n
         );
             
         cudaEventRecord(end);
         cudaEventSynchronize(end);
+
+        // Check for kernel execution errors
+        cuda_err = cudaGetLastError();
+        if (cuda_err != cudaSuccess) {
+            fprintf(stderr, "Kernel execution failed at run %d: %s\n", run, cudaGetErrorString(cuda_err));
+            break;
+        }
 
         float millisec = 0.0;
         cudaEventElapsedTime(&millisec, start, end);
@@ -168,40 +217,60 @@ int main(int argc, char ** argv) {
     }
     dtype avg_time = total_time / NUM_RUNS;
 
-    // Calculate effective memory access more accurately
-    size_t bytes_read_vals_cols = (size_t)nnz * (sizeof(dtype) + sizeof(int)); // values and col indices
-    size_t bytes_read_row_ptr = (size_t)(n + 1) * sizeof(int);                // row pointers
+    // Calculate memory bandwidth more accurately for SpMV
+    // For CSR SpMV, memory access pattern is:
+    // 1. Read all row_pointers (accessed sequentially)
+    // 2. Read all values and col_indices (accessed sequentially) 
+    // 3. Read vector elements (potentially random access pattern)
+    // 4. Write result vector (sequential)
 
-    // Count unique column indices
-    int* unique_cols = (int*)calloc(m, sizeof(int));
-    size_t unique_count = 0;
-    for (int i = 0; i < nnz; i++) {
-        if (unique_cols[h_csr.col_indices[i]] == 0) {
-            unique_cols[h_csr.col_indices[i]] = 1;
-            unique_count++;
-        }
-    }
-    free(unique_cols);
+    size_t bytes_read_vals = (size_t)nnz * sizeof(dtype);           // matrix values
+    size_t bytes_read_cols = (size_t)nnz * sizeof(int);            // column indices  
+    size_t bytes_read_row_ptr = (size_t)(n + 1) * sizeof(int);     // row pointers
+    
+    // For vector reads, each column index causes a vector element read
+    // This gives a more realistic bandwidth estimate for custom kernels
+    // that may not have sophisticated caching mechanisms
+    size_t bytes_read_vec = (size_t)nnz * sizeof(dtype);           // vector reads (one per nnz)
+    
+    size_t bytes_written = (size_t)n * sizeof(dtype);              // result vector
+    
+    // Total memory traffic
+    size_t total_bytes = bytes_read_vals + bytes_read_cols + 
+                        bytes_read_row_ptr + bytes_read_vec + bytes_written;
 
-    // Use the actual count of unique elements
-    size_t bytes_read_vec = unique_count * sizeof(dtype);
-
-    size_t bytes_read = bytes_read_vals_cols + // values and col indices
-                        bytes_read_row_ptr +               // row pointers
-                        bytes_read_vec;                   // vector reads (worst case estimate)
-    size_t bytes_written = (size_t)n * sizeof(dtype);                 // result vector
-    size_t total_bytes = bytes_read + bytes_written;
-
+    // Memory bandwidth calculation
     double bandwidth = total_bytes / (avg_time * 1.0e9);  // GB/s
-    double flops = 2.0 * nnz;
+    
+    // Computational intensity
+    double flops = 2.0 * nnz;  // Each non-zero: 1 multiply + 1 add
     double gflops = flops / (avg_time * 1.0e9);  // GFLOPS
+    
+    // Calculate arithmetic intensity for roofline analysis
+    double arithmetic_intensity = flops / (double)total_bytes;  // FLOPS/Byte
 
     // --- Print Matrix Statistics ---
     print_matrix_stats(&h_csr);
 
-    // --- Print Results ---
+    // --- Print Results with Additional Metrics ---
+    printf("\n=== Vector CSR Performance Results ===\n");
+    printf("Matrix: %s\n", argv[1]);
+    printf("Dimensions: %d x %d, NNZ: %d\n", n, m, nnz);
+    printf("Average time: %.6f seconds\n", avg_time);
+    printf("Memory bandwidth: %.2f GB/s\n", bandwidth);
+    printf("Compute performance: %.2f GFLOPS\n", gflops);
+    printf("Arithmetic intensity: %.3f FLOPS/Byte\n", arithmetic_intensity);
+    printf("Memory breakdown:\n");
+    printf("  Matrix values: %.2f MB\n", bytes_read_vals / (1024.0 * 1024.0));
+    printf("  Column indices: %.2f MB\n", bytes_read_cols / (1024.0 * 1024.0));
+    printf("  Row pointers: %.2f MB\n", bytes_read_row_ptr / (1024.0 * 1024.0));
+    printf("  Vector reads: %.2f MB\n", bytes_read_vec / (1024.0 * 1024.0));
+    printf("  Result writes: %.2f MB\n", bytes_written / (1024.0 * 1024.0));
+    printf("  Total memory: %.2f MB\n", total_bytes / (1024.0 * 1024.0));
+
+    // Also call the standard print function for consistency
     print_spmv_performance(
-        "Vector CSR", 
+        "Vector CSR Double Buffer", 
         argv[1],
         n, 
         m, 
