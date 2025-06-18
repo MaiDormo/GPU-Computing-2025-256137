@@ -13,8 +13,6 @@
 #include "../include/spmv_utils.h"
 #include "../include/spmv_kernels.h"
 
-#define WARP_SIZE 32
-
 
 // Function to classify rows and create row arrays
 void classify_rows(const int *row_ptr, int n, int **short_rows, int **long_rows, 
