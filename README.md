@@ -17,7 +17,7 @@ This repository contains various implementations of Sparse Matrix-Vector Multipl
 └── extract*.sh             # Scripts to extract and process benchmark results
 ```
 
-The `test/` directory contains experimental code and examples developed during lab sessions and is not part of the final benchmarked implementations.
+The `test/` directory contains experimental code and examples developed during lab sessions and is not part of the final benchmarked implementations. Currently it also contains the cuSPARSE implementation and the compile line is inside the `compile.sh` file.
 
 ## Implementations
 

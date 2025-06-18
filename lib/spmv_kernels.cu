@@ -230,7 +230,7 @@ __global__ void adaptive_csr(const dtype *csr_values, const int *csr_row_ptr,
         if (WARP_ID == 0) {
             SHARED_MEM[WARP_NUM] = thread_sum;
         }
-        __syncthreads(); // IMPORTANT: Ensure all warps have written to SHARED_MEM
+        __syncthreads();
 
         // The first warp (WARP_NUM == 0) sums the partial sums from SHARED_MEM
         if (WARP_NUM == 0) {

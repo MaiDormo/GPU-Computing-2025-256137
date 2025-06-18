@@ -136,7 +136,6 @@ int main(int argc, char ** argv) {
     double bandwidth, gflops;
     calculate_bandwidth(n,m,nnz,h_csr.col_indices, avg_time, &bandwidth, &gflops);
 
-    // Also call the standard print function for consistency
     print_spmv_performance(
         "Simple CSR", 
         argv[1],

@@ -5,13 +5,13 @@
 #SBATCH --gres=gpu:a30.24:1
 #SBATCH --cpus-per-task=4
 #SBATCH --time=00:05:00
-#SBATCH --job-name=cublas_spmv
-#SBATCH --output=cublas_spmv-%j.out
-#SBATCH --error=cublas_spmv-%j.err
+#SBATCH --job-name=cusparse_spmv
+#SBATCH --output=cusparse_spmv-%j.out
+#SBATCH --error=cusparse_spmv-%j.err
 #SBATCH --nodelist=edu01
 
 # Define executable and base directory
-EXEC=~/GPU-Computing-2025-256137/test/cublas.exec
+EXEC=~/GPU-Computing-2025-256137/test/cusparse.exec
 DATA_DIR=~/GPU-Computing-2025-256137/data
 
 # Print header for results

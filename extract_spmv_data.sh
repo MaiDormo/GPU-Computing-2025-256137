@@ -32,8 +32,8 @@ process_benchmark_file() {
         implementation="gpu_value_sequential"
     elif [[ "$filename" =~ gpu_value_blocked ]] || grep -q "Value.*Blocked|Blocked.*CSR" "$file"; then
         implementation="gpu_value_blocked"
-    elif [[ "$filename" =~ cublas ]] || grep -q "cuSPARSE|cuBLAS|CUBLAS" "$file"; then
-        implementation="cublas"
+    elif [[ "$filename" =~ cusparse ]] || grep -q "cuSPARSE" "$file"; then
+        implementation="cusparse"
     fi
 
     awk -v platform="$platform" -v impl="$implementation" '
