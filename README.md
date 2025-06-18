@@ -2,119 +2,109 @@
 
 This repository contains various implementations of Sparse Matrix-Vector Multiplication (SpMV) for both CPU and GPU, developed as part of the GPU Computing graduate course at the University of Trento.
 
-## Repository structure
+## Repository Structure
 ```text
 ├── bin/                    # Compiled executables
 ├── data/                   # Matrix market test files
-├── include/                # Header files
-├── lib/                    # Library implementation files
+├── include/                # Header files for types and utilities
+├── lib/                    # Library implementation files (kernels, utils)
 ├── obj/                    # Object files
-├── src/                    # Source code for all implementations
-│   ├── spmv_cpu_*.c        # CPU implementations (simple, omp, ilp)
-│   └── spmv_gpu_*.cu       # GPU implementations (simple, value_sequential, strided,vector)
-├── deviceQuery/            # NVIDIA device information utilities
+├── src/                    # Source code for all executables
+│   ├── spmv_cpu_*.c        # CPU implementations
+│   └── spmv_gpu_*.cu       # GPU implementations
+├── deviceQuery/            # NVIDIA device information utility
 ├── *.sh                    # Benchmark and run scripts
-└── extract_spmv_data.sh    # Script to extract and process benchmark results
+└── extract*.sh             # Scripts to extract and process benchmark results
 ```
 
-Inside the code there is also the "test" folder, inside this folder lies most of the code developed during the lab lesson, so feel free to skip it.
+The `test/` directory contains experimental code and examples developed during lab sessions and is not part of the final benchmarked implementations.
 
 ## Implementations
 
-CPU Implementations
+### CPU Implementations
+- **Simple CSR:** A basic, single-threaded row-per-thread implementation (`spmv_cpu_csr.c`).
+- **ILP:** A version optimized with manual loop unrolling to exploit instruction-level parallelism (`spmv_cpu_csr_ilp.c`).
 
-- **Simple:** Basic CSR implementation (one thread per row)
-- **ILP:** Instruction-level parallelism optimization
-
-GPU Implementations
-
-- **Simple:** Basic CSR implementation (one thread per row)
-- **Value Sequential:** Thread per non-zero element
-- **Strided:** Value-parallel with strided access pattern
+### GPU Implementations
+- **Simple:** A basic row-per-thread kernel (`spmv_gpu_simple_csr.cu`).
+- **Value Sequential:** A value-per-thread kernel using atomic adds, inefficient but illustrative (`spmv_gpu_value_sequential_csr.cu`).
+- **Value Blocked:** An improved value-parallel kernel with strided access (`spmv_gpu_value_blocked_csr.cu`).
+- **Vector (Warp-per-Row):** A more advanced kernel that assigns one warp to process each row (`spmv_gpu_vector_test_csr.cu`).
+- **Vector Double Buffer:** An optimized vector kernel that processes two rows per warp to improve occupancy (`spmv_gpu_vector_test_csr.cu`).
+- **Adaptive Row Blocks:** A kernel that dynamically assigns rows to either a warp or a full block based on row length (`spmv_gpu_adaptive_csr.cu`).
+- **Hybrid Adaptive:** The most advanced kernel, which classifies rows as "short" or "long" and uses a thread-per-row (scalar) or warp-per-row (vector) strategy accordingly (`spmv_gpu_hybrid_adaptive_csr.cu`).
 
 ## How to Compile
 
-To compile all implementations:
+To compile all implementations using the default release configuration:
 ```bash
 make
 ```
-To clean up build artifacts:
+Other useful targets are available in the `Makefile`:
 ```bash
+# Build with debug symbols
+make debug
+
+# Clean all build artifacts
 make clean
 ```
 
-Keep in mind that if this code is runned on the L40S gpu the makefile line:
-
-```makefile
-NV_OPT := --gpu-architecture=sm_80 -m64 -Xcompiler -fopenmp
-```
-
-needs to be changed like this:
-```makefile
-NV_OPT := --gpu-architecture=sm_89 -m64 -Xcompiler -fopenmp
-```
-(if already compiled with the older architecture, you need to clean and rebuild).
-
-
-
+### Note on GPU Architecture
+The `Makefile` is configured for an NVIDIA A30 GPU (`sm_80`). If you are compiling for a different architecture (e.g., an L40S), you must update the `RELEASE_NV_OPT` variable in the `Makefile`. For an L40S, change `--gpu-architecture=sm_80` to `--gpu-architecture=sm_89`, then run `make clean && make`.
 
 ## How to Download the Sparse Matrices
 
-In order to download the dataset, you can run the bash script called download_matrices.sh. This script is going to take care of the download and unpacking of the matrices, positioning them inside the data folder.
-
-If some error occurs during the download, the links are inside the script and you can download them independently following the command inside it.
-
-## How to Run
-
-Single test
+Run the provided script to download and unpack the test matrices into the `data/` directory:
 ```bash
-# CPU implementation
-./bin/spmv_cpu_<impl> data/<dataset>/<dataset>.mtx
-
-# GPU implementation
-./bin/spmv_gpu_<impl>.exec data/<dataset>/<dataset>.mtx
+./download_matrices.sh
 ```
 
-Batch Benchmarking
+## How to Run Benchmarks
+
+### Running All Benchmarks
+To submit all benchmark jobs to the SLURM scheduler, use the main script:
 ```bash
-# Run all benchmarks
 ./run_all_benchmarks.sh
-
-# Run specific implementation
-./cpu_simple_run.sh
-./gpu_simple_run.sh
-```
-Data analysis
-
-```bash
-./extract_spmv_data.sh
 ```
 
-This will generate spmv_benchmark_results.csv with performance metrics for all implementations and datasets.
+### Running Individual Implementations
+You can run benchmarks for specific implementations using their corresponding scripts (e.g., `sbatch cpu_simple_run.sh`, `sbatch run_spmv_hybrid_adaptive.sh`).
 
+### Running Experiments
+The repository includes scripts for running parameter sweeps:
+- **Block/Thread Size Sweep:** Use `run_spmv_experimenting_block_thread_sizes.sh` to test different launch configurations for a specific kernel.
+- **Hybrid Kernel Sweep:** Use `spmv_test.sh` to test different `(threads, threshold)` combinations for the hybrid adaptive kernel.
 
-In order to run the experiment with different kernels you need to use a different script
+## Data Analysis
 
-```bash
-sbatch run_spmv_experimenting_block_thread_sizes.sh
-```
-After the script is runned we need to extract the relvant data in a csv file. This is done by calling the script
+After running the benchmarks, use the extraction scripts to generate CSV files:
+- **Main Benchmarks:**
+  ```bash
+  ./extract_spmv_data.sh
+  ```
+  This script finds all `.out` files in the root directory and generates `experiment_spmv_benchmark-*.csv`.
 
-```bash
-./convert_spmv_output_to_csv.sh experiment_spmv_benchmark-[number].out > file.csv
-```
+- **Block/Thread Size Experiment:**
+  ```bash
+  ./convert_spmv_output_to_csv.sh experiment_spmv_benchmark-[JOB_ID].out > sweep_results.csv
+  ```
+
+- **Hybrid Kernel Sweep:**
+  ```bash
+  ./extract_test.sh hybrid_adaptive_sweep-[JOB_ID].out
+  ```
+  This generates `hybrid_sweep_results.csv`.
 
 ## Performance Metrics
 
 The benchmarks measure:
-- Execution time (s)
-- Memory Bandwidth (GB/s)
-- Computational Perfromance (GFLOPS)
+- **Execution Time (s):** Average time per kernel execution.
+- **Memory Bandwidth (GB/s):** Effective memory throughput.
+- **Computational Performance (GFLOPS):** Giga-Floating-Point Operations Per Second.
 
-## Hardware Used
+## Hardware and Software Used
 
-- **CPU**: AMD EPYC 9334 @ 2.7GHz, 32/64 cores/threads
-- **GPU**: NVIDIA RTX A30
-- Cuda Toolkit 12.3.2 or later
-- GCC 11.5 
-
+- **CPU**: AMD EPYC 9334 @ 2.7GHz (32 Cores / 64 Threads)
+- **GPU**: NVIDIA A30 (24 GB HBM2)
+- **CUDA Toolkit**: 12.5.0
+- **GCC**: 11.5

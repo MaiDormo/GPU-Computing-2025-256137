@@ -129,7 +129,7 @@ done
 awk '!seen[$0]++' "$OUTPUT_CSV" > "${OUTPUT_CSV}.tmp" && mv "${OUTPUT_CSV}.tmp" "$OUTPUT_CSV"
 
 echo ""
-echo "Data extraction complete!"
+echo "Data extraction complete!"5
 echo "Results saved to: $OUTPUT_CSV"
 echo ""
 echo "Summary:"
