@@ -57,15 +57,16 @@ __global__ void vector_csr_double_buffer(const dtype *csr_values, const int *csr
                                         dtype *res, int n);
 
 /**
- * @brief Vector CSR with shared memory caching
+ * @brief Hybrid adaptive kernel that employs both scalar and 
+ * vector approaches based on matrix statistics and row lengths.
  */
-__global__ void vector_csr_shared_cache(const dtype *csr_values, const int *csr_row_ptr, 
-                                       const int *csr_col_indices, const dtype *vec, 
-                                       dtype *res, int n);
+__global__ void hybrid_adaptive_spmv_optimized(const dtype *csr_values, const int *csr_row_ptr,
+                                              const int *csr_col_indices, const dtype *vec,
+                                              dtype *res, int n, const int *short_rows, 
+                                              const int *long_rows, int num_short, 
+                                              int num_long, int short_blocks);
 
-__global__ void value_parallel_blocked_spmv_v3(const dtype *csr_values, const int *csr_row_ptr, 
-    const int *csr_col_indices, const dtype *vec,
-    dtype *res, int nnz, int num_rows, int stride);
+
 
 
 #endif // SPMV_KERNELS_H
