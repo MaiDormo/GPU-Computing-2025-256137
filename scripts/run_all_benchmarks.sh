@@ -27,7 +27,7 @@ for script in "${BENCHMARK_SCRIPTS[@]}"; do
   echo "Submitting benchmark: $script"
   
   # Submit the job and capture its ID
-  JOB_ID=$(sbatch "$WORKSPACE/$script" | awk '{print $4}')
+  JOB_ID=$(sbatch "$WORKSPACE/scripts/$script" | awk '{print $4}')
   
   if [ -n "$JOB_ID" ]; then
     echo "  Submitted as job $JOB_ID"
